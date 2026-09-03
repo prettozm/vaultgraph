@@ -134,7 +134,8 @@ npx http-server -p 8080 .
 
 ## Publishing
 
-- **Pages**: `.github/workflows/pages.yml` builds and deploys `viewer/dist` on every push to `main` (requires the repo's Pages source set to "GitHub Actions").
+- **Pages (mode "GitHub Actions", recommended)**: `.github/workflows/pages.yml` runs `npm test`, builds `viewer/dist` and deploys it on every push to `main`; `configure-pages` enables Pages on a fresh repository. The viewer is then the site root.
+- **Pages (mode "Deploy from a branch", `main` / root)**: also works — `.nojekyll` makes GitHub serve the repository as-is (Jekyll would otherwise skip `.vault-graph/`), and the root `index.html` opens `viewer/src/`. In this mode the `pages.yml` run fails at `configure-pages` by design; switch the source to "GitHub Actions" to use it.
 - **Releases**: pushing a tag `vX.Y.Z` runs `.github/workflows/release.yml`, which verifies the bootstrap ZIP is up to date and attaches `dist/vault-graph-bootstrap.zip` and `dist/CLAUDE_INSTALL_PROMPT.md` to a GitHub Release.
 
 ## Roadmap
