@@ -2,7 +2,8 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
     <title>Vault Graph</title>
     <meta
       name="description"
@@ -12,7 +13,7 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <!-- ============================ HOME (CDC §18) ============================ -->
+    <!-- ============================ HOME (CDC 18, 24) ============================ -->
     <section id="screen-home" class="screen screen-centered">
       <div class="home-card">
         <h1 class="wordmark">VAULT GRAPH</h1>
@@ -26,15 +27,15 @@
             name="repo"
             type="text"
             spellcheck="false"
-            placeholder="https://github.com/owner/repository"
+            placeholder="owner/repository"
             aria-describedby="home-hint"
           />
           <button id="load-button" type="submit" class="primary">Load graph</button>
         </form>
         <p id="home-error" class="form-error" role="alert" hidden></p>
         <p id="home-hint" class="hint">
-          Public repositories only in v0. You can also paste a direct
-          <code>manifest.json</code> URL (handy for local or offline use).
+          Public repositories only in v0. <code>owner/repo</code> and full GitHub URLs both work; you
+          can also paste a direct <code>manifest.json</code> URL (handy for local or offline use).
         </p>
       </div>
     </section>
@@ -48,7 +49,7 @@
       </div>
     </section>
 
-    <!-- ==================== INCOMPATIBLE REPO (CDC §20) ==================== -->
+    <!-- ==================== INCOMPATIBLE REPO (CDC 20, 24) ==================== -->
     <section id="screen-incompatible" class="screen screen-centered" hidden>
       <div class="status-card wide">
         <h1 class="headline">This repository does not expose a Vault Graph.</h1>
@@ -85,11 +86,12 @@
       </div>
     </section>
 
-    <!-- ============================ ERROR ============================ -->
+    <!-- ============================ ERROR (CDC 25) ============================ -->
     <section id="screen-error" class="screen screen-centered" hidden>
       <div class="status-card wide">
-        <h1 class="headline">The graph could not be loaded.</h1>
+        <h1 id="error-title" class="headline">The graph could not be loaded.</h1>
         <p id="error-message" class="error-message"></p>
+        <p id="error-hint" class="hint"></p>
         <p id="error-detail" class="mono muted small wrap"></p>
         <div class="actions">
           <button type="button" class="primary" data-action="retry">Retry</button>
@@ -98,54 +100,114 @@
       </div>
     </section>
 
-    <!-- ==================== MAIN VIEW (CDC §21 – §26) ==================== -->
+    <!-- ==================== MAIN VIEW (CDC 21 - 26) ==================== -->
     <section id="screen-graph" class="screen screen-app" hidden>
-      <header class="topbar">
+      <!-- Header: compact, at most two lines (7) -->
+      <header class="appbar">
         <button type="button" class="wordmark-small" data-action="home" title="Load another repository">
           VAULT&nbsp;GRAPH
         </button>
-        <span id="topbar-repo" class="topbar-repo mono"></span>
-        <div class="topbar-actions">
-          <button id="refresh-button" type="button" class="secondary" title="Re-fetch .vault-graph (does not rebuild)">
-            Refresh
-          </button>
-        </div>
+        <span id="topbar-repo" class="appbar-repo mono"></span>
+        <span id="topbar-version" class="appbar-version"></span>
+        <span class="spacer"></span>
+        <button id="topbar-generated" type="button" class="freshness" aria-label="Graph generation date"></button>
+        <a id="topbar-commit" class="appbar-commit mono" target="_blank" rel="noreferrer noopener"></a>
+        <button id="refresh-button" type="button" class="secondary" title="Re-fetch .vault-graph (never rebuilds it)">
+          Refresh
+        </button>
+        <button id="theme-toggle" type="button" class="icon-button" aria-label="Switch colour theme" title="Switch colour theme">
+          ◐
+        </button>
+        <div id="topbar-fetched" class="appbar-fetched small muted"></div>
       </header>
 
-      <div class="layout">
-        <aside class="panel panel-left" aria-label="Graph metadata and filters">
-          <div id="meta" class="meta"></div>
+      <!-- Stats strip: counts + candidate/unresolved shortcuts (11, 27, 28) -->
+      <div id="stats" class="stats" aria-label="Graph summary"></div>
+
+      <!-- Toolbar (10) -->
+      <div class="toolbar toolbar-main">
+        <div class="segmented" role="group" aria-label="View mode">
+          <button id="view-2d" type="button" class="seg-button" data-view="2d" aria-pressed="true">2D</button>
+          <button id="view-3d" type="button" class="seg-button" data-view="3d" aria-pressed="false">3D</button>
+        </div>
+        <label id="projection-wrap" class="projection" hidden>
+          <span class="sr-only">Projection</span>
+          <select id="projection-select" aria-label="3D projection"></select>
+        </label>
+        <div class="search-wrap">
+          <input
+            id="search-input"
+            type="search"
+            placeholder="Search…"
+            aria-label="Search nodes by label, alias or id"
+            autocomplete="off"
+            role="combobox"
+            aria-expanded="false"
+            aria-controls="search-results"
+          />
+          <ul id="search-results" class="search-results" role="listbox" aria-label="Search results" hidden></ul>
+        </div>
+        <button
+          id="filters-button"
+          type="button"
+          class="secondary with-badge"
+          aria-expanded="false"
+          aria-controls="filters-drawer"
+        >
+          Filters<span id="filter-badge" class="badge" hidden></span>
+        </button>
+      </div>
+
+      <div class="toolbar toolbar-view">
+        <div class="focus-group" role="group" aria-label="Focus on the selected node">
+          <span class="toolbar-label">Focus</span>
+          <button type="button" class="seg-button" data-hops="1" disabled>1 hop</button>
+          <button type="button" class="seg-button" data-hops="2" disabled>2 hops</button>
+          <button type="button" class="seg-button" data-hops="0" disabled>All</button>
+        </div>
+        <span class="spacer"></span>
+        <button id="zoom-out" type="button" class="icon-button" aria-label="Zoom out" title="Zoom out">−</button>
+        <button id="zoom-in" type="button" class="icon-button" aria-label="Zoom in" title="Zoom in">+</button>
+        <button id="recenter-button" type="button" class="ghost">Recenter</button>
+        <button id="fit-button" type="button" class="ghost">Fit</button>
+        <button id="reset-view-button" type="button" class="ghost">Reset view</button>
+      </div>
+
+      <!-- Stage: the graph is the product (34) -->
+      <div class="stage-row">
+        <!-- Filters: side panel on desktop, bottom sheet on mobile (11) -->
+        <div id="drawer-backdrop" class="backdrop" hidden></div>
+        <aside id="filters-drawer" class="drawer" role="dialog" aria-modal="true" aria-label="Filters" hidden>
+          <div class="drawer-handle" aria-hidden="true"></div>
+          <div class="panel-head">
+            <h2 class="panel-title">Filters</h2>
+            <button id="filters-reset" type="button" class="link-button">Clear all</button>
+            <span class="spacer"></span>
+            <button id="filters-close" type="button" class="icon-button" aria-label="Close the filters">✕</button>
+          </div>
           <div id="warnings"></div>
-          <h2 class="panel-title">Filters</h2>
           <div id="filters" class="filters"></div>
         </aside>
-
         <main class="stage">
-          <div class="stage-toolbar">
-            <input
-              id="search-input"
-              type="search"
-              placeholder="Search by label or alias…"
-              aria-label="Search nodes by label"
-            />
-            <span id="search-count" class="muted small"></span>
-            <span class="spacer"></span>
-            <button id="zoom-out" type="button" class="ghost" title="Zoom out">−</button>
-            <button id="zoom-in" type="button" class="ghost" title="Zoom in">+</button>
-            <button id="recenter-button" type="button" class="ghost">Recenter</button>
-          </div>
           <div class="canvas-wrap">
-            <canvas id="graph-canvas"></canvas>
+            <canvas id="graph-canvas" aria-label="Graph, 2D view"></canvas>
+            <canvas id="graph-canvas-3d" aria-label="Graph, 3D view" hidden></canvas>
             <div id="visible-count" class="canvas-badge"></div>
+            <p id="graph-note" class="canvas-note" role="status" hidden></p>
           </div>
           <div id="legend" class="legend-bar"></div>
         </main>
 
-        <aside class="panel panel-right" aria-label="Inspector">
-          <h2 class="panel-title">Inspector</h2>
+        <aside id="inspector-panel" class="panel panel-right" aria-label="Inspector" hidden>
+          <div class="panel-head">
+            <h2 class="panel-title">Inspector</h2>
+            <span class="spacer"></span>
+            <button id="inspector-close" type="button" class="icon-button" aria-label="Close the inspector">✕</button>
+          </div>
           <div id="inspector" class="inspector"></div>
         </aside>
       </div>
+
     </section>
 
     <script type="module" src="./app.js"></script>

@@ -320,3 +320,16 @@ console.log(
 
 const ok = reporter.summary();
 process.exit(ok ? 0 : 1);
+
+// --- Optional temporal metadata: node.date must be ISO-8601 (YYYY, YYYY-MM or YYYY-MM-DD[T…]) when present
+{
+  const ISO = /^\d{4}(-\d{2}(-\d{2}(T[\d:.]+Z?)?)?)?$/;
+  let bad = 0;
+  for (const node of nodes) {
+    if (node.date === undefined || node.date === null) continue;
+    if (typeof node.date !== "string" || !ISO.test(node.date) || Number.isNaN(Date.parse(node.date))) {
+      bad++; reporter.fail(`node ${node.id}: "date" is not ISO-8601 (${JSON.stringify(node.date)})`);
+    }
+  }
+  reporter.check(bad === 0, "optional node.date values are ISO-8601", `${bad} malformed date(s)`);
+}

@@ -253,3 +253,48 @@ export function incidentEdges(graph, nodeId) {
   const resolve = (ids) => ids.map((id) => graph.edgeById.get(id)).filter(Boolean);
   return { incoming: resolve(a.in), outgoing: resolve(a.out) };
 }
+
+/**
+ * Node ids within `hops` undirected hops of `startId` (the start included).
+ * `hops <= 0` or a non-finite value means "the whole graph" (Focus: All).
+ * @param {object} graph
+ * @param {string} startId
+ * @param {number} hops
+ * @returns {Set<string>}
+ */
+export function neighborhood(graph, startId, hops = 1) {
+  const out = new Set();
+  if (!graph?.nodeById?.has(startId)) return out;
+  if (!Number.isFinite(hops) || hops <= 0) return new Set(graph.nodes.map((n) => n.id));
+  out.add(startId);
+  let frontier = [startId];
+  for (let depth = 0; depth < hops; depth += 1) {
+    const next = [];
+    for (const id of frontier) {
+      const adj = graph.adjacency.get(id);
+      if (!adj) continue;
+      for (const edgeId of [...adj.in, ...adj.out]) {
+        const edge = graph.edgeById.get(edgeId);
+        if (!edge) continue;
+        for (const other of [edge.from, edge.to]) {
+          if (out.has(other)) continue;
+          out.add(other);
+          next.push(other);
+        }
+      }
+    }
+    if (!next.length) break;
+    frontier = next;
+  }
+  return out;
+}
+
+/** Edge ids whose two endpoints are both inside `nodeIds`. */
+export function edgesWithin(graph, nodeIds) {
+  const out = new Set();
+  if (!graph || !nodeIds) return out;
+  for (const edge of graph.edges) {
+    if (nodeIds.has(edge.from) && nodeIds.has(edge.to)) out.add(edge.id);
+  }
+  return out;
+}

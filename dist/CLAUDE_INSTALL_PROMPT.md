@@ -229,7 +229,8 @@ Nœud (`graph/nodes.jsonl`) :
 }
 ```
 
-Champs optionnels : `reason` (obligatoire si degré 0), `aliases` (tableau de chaînes).
+Champs optionnels : `reason` (obligatoire si degré 0), `aliases` (tableau de chaînes), `date` (ISO-8601 à la
+précision connue — `2026-05-14`, `2026-08` ou `2026` — **uniquement** si la source l'énonce ; ne jamais déduire une date d'un nom de fichier ou d'un commit ; sert aux projections temporelles du viewer, les nœuds sans `date` restent « non datés »).
 
 Arête (`graph/edges.jsonl`) :
 

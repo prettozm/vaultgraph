@@ -42,3 +42,44 @@ export function formatCount(n) {
   if (!Number.isFinite(n)) return '—';
   return String(Math.trunc(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '\u202f'); // U+202F narrow no-break space (fr typography)
 }
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+/**
+ * Relative freshness, e.g. "12 min ago" (CDC §8). Deterministic: the caller
+ * supplies `now`, so the same pair always renders the same string.
+ * @param {string|Date|null|undefined} value
+ * @param {number|Date} [now]
+ * @param {{empty?:string, invalid?:string}} [labels]
+ */
+export function formatRelative(value, now = Date.now(), labels = {}) {
+  const empty = labels.empty ?? 'not generated yet';
+  const invalid = labels.invalid ?? 'unknown date';
+  if (value === null || value === undefined || value === '') return empty;
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return invalid;
+  const nowMs = now instanceof Date ? now.getTime() : Number(now);
+  if (!Number.isFinite(nowMs)) return invalid;
+  const delta = nowMs - d.getTime();
+  const future = delta < 0;
+  const abs = Math.abs(delta);
+  const say = (text) => (future ? `in ${text}` : `${text} ago`);
+  if (abs < 45_000) return 'just now';
+  if (abs < HOUR) return say(`${Math.round(abs / MINUTE)} min`);
+  if (abs < DAY) {
+    const h = Math.round(abs / HOUR);
+    return say(`${h} hour${h === 1 ? '' : 's'}`);
+  }
+  if (abs < 30 * DAY) {
+    const days = Math.round(abs / DAY);
+    return say(`${days} day${days === 1 ? '' : 's'}`);
+  }
+  if (abs < 365 * DAY) {
+    const months = Math.round(abs / (30 * DAY));
+    return say(`${months} month${months === 1 ? '' : 's'}`);
+  }
+  const years = Math.round(abs / (365 * DAY));
+  return say(`${years} year${years === 1 ? '' : 's'}`);
+}

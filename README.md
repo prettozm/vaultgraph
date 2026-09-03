@@ -43,22 +43,22 @@ Once installed, keep the graph current with:
 
 ## Open the viewer
 
-The viewer is published at **https://prettozm.github.io/vaultgraph/**.
+Published at **https://prettozm.github.io/vaultgraph/**. Paste a public GitHub repository URL (or `owner/repo`); the viewer resolves the default branch (never assumes `main`), fetches `.vault-graph/manifest.json` and projects the graph. It never rebuilds a graph: **Refresh** refetches what the repository exposes.
 
-Paste a public GitHub repository URL and click **Load graph**. Notes:
+- **2D | 3D** — same graph, same layout; the 3D view adds a semantic Z axis chosen by the **Projection** selector:
+  - *Context* — one layer per context (homonyms such as `résistance / électronique` vs `résistance / finance` never share a layer);
+  - *Time* — layers by node `date` when sources state one, otherwise ordinal order along `precede` / `raffine` / `supersede` / `derive_de`; undated nodes in their own layer; unavailable when the graph carries no temporal information;
+  - *Provenance* — one layer per primary source document (source nodes drawn as squares);
+  - *Knowledge* — aboutness (concepts) vs substance (needs, use cases, features, decisions, hypotheses) vs other;
+  - *Epistemic* — layers by declared status (confirmed → explicit → candidate → unresolved → rejected), colour by status.
+- **Candidates (n)** / **Unresolved (n)** quick actions isolate proposed relations and unexplained-or-orphan nodes; they are always shown as tentative, never as facts.
+- **Search** selects and centres a node and opens the inspector; **Focus** keeps 1 hop / 2 hops / all.
+- **Filters** live in a drawer (bottom sheet on phones); the graph keeps ≥ 70 % of the screen.
+- Freshness: `Generated N min ago` (exact UTC on tap) is the date that matters; the fetch time is secondary.
+- Shareable URLs: `?repo=owner/repo&view=3d&projection=context`. Preferences (view, projection, theme, last repo) are kept in the browser only.
+- Dark mode follows the system and can be toggled.
 
-- v0 supports **public repositories only**; the default branch is detected automatically, it does not assume `main`.
-- The viewer never rebuilds the graph — **Refresh** only refetches the `.vault-graph` already committed in the repo.
-- `generated_at` (in `manifest.json`) is when the graph was produced; `fetched_at` is when the viewer downloaded it. The date that matters to you is `generated_at`.
-
-You can also open the viewer with query parameters instead of typing the URL:
-
-```text
-viewer/src/index.html?repo=https://github.com/owner/repo
-viewer/src/index.html?manifest=<url to a manifest.json>
-```
-
-If Pages is not yet enabled on your fork, set the repository's **Settings → Pages → Source** to **GitHub Actions**; `pages.yml` takes care of the rest on every push to `main`.
+v0 limits: public repositories only; 3D positions are a projection of the 2D layout, not a 3D simulation. Details in `viewer/README.md` and `CHANGELOG.md`.
 
 ## What is in `.vault-graph/`
 

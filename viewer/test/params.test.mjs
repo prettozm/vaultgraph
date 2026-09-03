@@ -9,9 +9,28 @@ test('readParams reads both supported parameters', () => {
     repo: 'https://github.com/foo/bar',
     manifest: null,
     preferred: 'repo',
+    view: null,
+    projection: null,
   });
-  assert.deepEqual(readParams(''), { repo: null, manifest: null, preferred: null });
-  assert.deepEqual(readParams('?repo=%20%20'), { repo: null, manifest: null, preferred: null });
+  const empty = { repo: null, manifest: null, preferred: null, view: null, projection: null };
+  assert.deepEqual(readParams(''), empty);
+  assert.deepEqual(readParams('?repo=%20%20'), empty);
+});
+
+test('readParams reads the optional view and projection (CDC §23)', () => {
+  const params = readParams('?repo=foo/bar&view=3D&projection=Time');
+  assert.equal(params.repo, 'foo/bar');
+  assert.equal(params.view, '3d');
+  assert.equal(params.projection, 'time');
+  // An unknown view mode is ignored rather than guessed.
+  assert.equal(readParams('?repo=foo/bar&view=4d').view, null);
+});
+
+test('classifyInput accepts the short owner/repo form (CDC §23)', () => {
+  const result = classifyInput('foo/bar', BASE);
+  assert.equal(result.kind, 'repo');
+  assert.equal(result.owner, 'foo');
+  assert.equal(result.repo, 'bar');
 });
 
 test('manifest overrides repo', () => {
@@ -60,4 +79,20 @@ test('buildAppUrl produces a bookmarkable URL for each target kind', () => {
     `${BASE}?manifest=https%3A%2F%2Fx%2Fm%2Fmanifest.json`
   );
   assert.equal(buildAppUrl(BASE, null), BASE);
+});
+
+test('buildAppUrl prefers the short repo form and carries view/projection', () => {
+  const target = { kind: 'repo', value: 'https://github.com/foo/bar', owner: 'foo', repo: 'bar', branch: null };
+  assert.equal(buildAppUrl(BASE, target), `${BASE}?repo=foo%2Fbar`);
+  assert.equal(
+    buildAppUrl(BASE, target, { view: '3d', projection: 'time' }),
+    `${BASE}?repo=foo%2Fbar&view=3d&projection=time`
+  );
+  // 2D is the default: it never pollutes the shared URL.
+  assert.equal(buildAppUrl(BASE, target, { view: '2d', projection: 'time' }), `${BASE}?repo=foo%2Fbar`);
+  // A pinned branch keeps the full URL so the ref is not lost.
+  assert.equal(
+    buildAppUrl(BASE, { ...target, branch: 'trunk', value: 'https://github.com/foo/bar/tree/trunk' }),
+    `${BASE}?repo=https%3A%2F%2Fgithub.com%2Ffoo%2Fbar%2Ftree%2Ftrunk`
+  );
 });

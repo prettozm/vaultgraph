@@ -1,11 +1,71 @@
-// Canvas renderer + interaction for the 2D graph (CDC §22).
-// Pan (drag background), zoom (wheel), node drag, click-to-select node or edge,
-// recenter, and search highlighting.
-import { colorFor, inkFor } from '../lib/colors.js';
+// Canvas renderer + interaction for the 2D graph (CDC §22, brief §4/§16).
+// Pan (drag background), zoom (wheel/pinch-less), node drag, click-to-select,
+// recenter/fit/reset, search highlighting, emphasis (Focus), theme-aware colours.
+import { colorFor, inkFor, statusColor, shapeForType, isTentative } from '../lib/colors.js';
 import { boundsOf } from '../lib/layout.js';
 
 const MIN_SCALE = 0.08;
 const MAX_SCALE = 8;
+const LABEL_ALWAYS_MAX = 40; // never label every node beyond this many (§16)
+
+function cssVar(styles, name, fallback) {
+  const value = styles.getPropertyValue(name);
+  return value && value.trim() ? value.trim() : fallback;
+}
+
+/** Read the canvas palette from the CSS custom properties (dark mode, §18). */
+export function readPalette(root = document.documentElement) {
+  let styles;
+  try {
+    styles = getComputedStyle(root);
+  } catch {
+    styles = { getPropertyValue: () => '' };
+  }
+  const edgeRgb = cssVar(styles, '--canvas-edge', '120, 130, 145');
+  const dark = (root.dataset?.theme ?? '') === 'dark' ||
+    (!root.dataset?.theme && matchesDark());
+  return {
+    dark,
+    edge: (alpha) => `rgba(${edgeRgb}, ${alpha})`,
+    label: cssVar(styles, '--canvas-label', '#14243a'),
+    labelSoft: cssVar(styles, '--canvas-label-soft', '#5c6675'),
+    halo: cssVar(styles, '--canvas-halo', 'rgba(252,252,250,0.92)'),
+    accent: cssVar(styles, '--focus', '#2f6f9f'),
+  };
+}
+
+function matchesDark() {
+  try {
+    return globalThis.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+  } catch {
+    return false;
+  }
+}
+
+/** Draw one node glyph; shape carries the type so colour is never alone (§19). */
+export function pathForShape(ctx, shape, x, y, r) {
+  ctx.beginPath();
+  if (shape === 'square') {
+    const s = r * 0.92;
+    ctx.rect(x - s, y - s, s * 2, s * 2);
+  } else if (shape === 'diamond') {
+    const s = r * 1.25;
+    ctx.moveTo(x, y - s);
+    ctx.lineTo(x + s, y);
+    ctx.lineTo(x, y + s);
+    ctx.lineTo(x - s, y);
+    ctx.closePath();
+  } else if (shape === 'triangle') {
+    const s = r * 1.3;
+    ctx.moveTo(x, y - s);
+    ctx.lineTo(x + s * 0.9, y + s * 0.72);
+    ctx.lineTo(x - s * 0.9, y + s * 0.72);
+    ctx.closePath();
+  } else {
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+  }
+  return ctx;
+}
 
 export function createGraphView(canvas, handlers = {}) {
   const ctx = canvas.getContext('2d');
@@ -13,17 +73,20 @@ export function createGraphView(canvas, handlers = {}) {
   let data = { graph: null, sim: null, visibleNodes: new Set(), visibleEdges: new Set(), matches: new Set() };
   let selection = null;
   let hover = null;
+  let emphasis = null;
+  let palette = readPalette();
   let running = false;
   let rafId = 0;
   let dragging = null;
   let pointerMoved = false;
+  let labelRank = new Map();
 
   function cssSize() {
     const rect = canvas.getBoundingClientRect();
     return { width: Math.max(rect.width, 1), height: Math.max(rect.height, 1) };
   }
 
-  function resize() {
+  function resizeCanvas() {
     const dpr = Math.min(globalThis.devicePixelRatio || 1, 2);
     const { width, height } = cssSize();
     const w = Math.round(width * dpr);
@@ -43,8 +106,9 @@ export function createGraphView(canvas, handlers = {}) {
     };
   }
 
+  // Size by degree: sqrt, clamped, so a hub reads bigger without exploding (§4).
   function radiusOf(body) {
-    return 4.5 + Math.sqrt(body.degree || 0) * 2.4;
+    return Math.min(4 + Math.sqrt(body.degree || 0) * 2.4, 18);
   }
 
   function visibleBodies() {
@@ -52,12 +116,19 @@ export function createGraphView(canvas, handlers = {}) {
     return data.sim.bodies.filter((b) => data.visibleNodes.has(b.id));
   }
 
+  function computeLabelRank() {
+    labelRank = new Map();
+    const bodies = visibleBodies()
+      .slice()
+      .sort((a, b) => (b.degree || 0) - (a.degree || 0));
+    bodies.forEach((b, i) => labelRank.set(b.id, i));
+  }
+
   function pickNode(world) {
-    const bodies = visibleBodies();
     let best = null;
     let bestDist = Infinity;
-    for (const body of bodies) {
-      const r = radiusOf(body) + 6 / view.scale;
+    for (const body of visibleBodies()) {
+      const r = radiusOf(body) + 8 / view.scale;
       const d = Math.hypot(body.x - world.x, body.y - world.y);
       if (d <= r && d < bestDist) {
         best = body;
@@ -79,7 +150,7 @@ export function createGraphView(canvas, handlers = {}) {
 
   function pickEdge(world) {
     if (!data.graph || !data.sim) return null;
-    const tolerance = 6 / view.scale;
+    const tolerance = 7 / view.scale;
     let best = null;
     let bestDist = tolerance;
     for (const edge of data.graph.edges) {
@@ -96,13 +167,15 @@ export function createGraphView(canvas, handlers = {}) {
     return best;
   }
 
+  function faded(id) {
+    return Boolean(emphasis) && !emphasis.has(id);
+  }
+
   function draw() {
-    const { width, height, dpr } = resize();
+    const { width, height, dpr } = resizeCanvas();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
-
     if (!data.graph || !data.sim) return;
-
     ctx.setTransform(dpr * view.scale, 0, 0, dpr * view.scale, dpr * view.tx, dpr * view.ty);
 
     const selectedNodeId = selection?.kind === 'node' ? selection.id : null;
@@ -128,27 +201,23 @@ export function createGraphView(canvas, handlers = {}) {
       const b = data.sim.byId.get(edge.to);
       if (!a || !b) continue;
       const isSelected = edge.id === selectedEdgeId;
-      const touchesSelection =
-        selectedNodeId && (edge.from === selectedNodeId || edge.to === selectedNodeId);
-      const dim = Boolean(selectedNodeId) && !touchesSelection;
+      const touchesSelection = selectedNodeId && (edge.from === selectedNodeId || edge.to === selectedNodeId);
+      const dim = faded(edge.from) || faded(edge.to) || (Boolean(selectedNodeId) && !touchesSelection);
+      // Candidate / unresolved relations stay visually lighter — never confirmed (§4, §27).
+      const tentative = isTentative(edge.status) || edge.sources.length === 0;
 
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
-      ctx.strokeStyle = isSelected
-        ? '#b4560f'
-        : touchesSelection
-          ? 'rgba(60,70,90,0.75)'
-          : dim
-            ? 'rgba(120,130,145,0.14)'
-            : 'rgba(120,130,145,0.42)';
-      ctx.lineWidth = (isSelected ? 2.6 : touchesSelection ? 1.7 : 1.1) / view.scale;
-      if (edge.sources.length === 0) ctx.setLineDash([5 / view.scale, 4 / view.scale]);
+      if (isSelected) ctx.strokeStyle = palette.accent;
+      else if (tentative) ctx.strokeStyle = statusColor(edge.status, { dark: palette.dark, alpha: dim ? 0.16 : 0.5 });
+      else ctx.strokeStyle = palette.edge(dim ? 0.12 : touchesSelection ? 0.75 : 0.42);
+      ctx.lineWidth = (isSelected ? 2.6 : tentative ? 0.9 : touchesSelection ? 1.7 : 1.1) / view.scale;
+      if (tentative) ctx.setLineDash([5 / view.scale, 4 / view.scale]);
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Arrow head, only when large enough to read.
-      if (view.scale > 0.45) {
+      if (view.scale > 0.45 && !tentative) {
         const rb = radiusOf(b);
         const angle = Math.atan2(b.y - a.y, b.x - a.x);
         const tipX = b.x - Math.cos(angle) * rb;
@@ -159,11 +228,7 @@ export function createGraphView(canvas, handlers = {}) {
         ctx.lineTo(tipX - Math.cos(angle - 0.4) * size, tipY - Math.sin(angle - 0.4) * size);
         ctx.lineTo(tipX - Math.cos(angle + 0.4) * size, tipY - Math.sin(angle + 0.4) * size);
         ctx.closePath();
-        ctx.fillStyle = isSelected
-          ? '#b4560f'
-          : dim
-            ? 'rgba(120,130,145,0.18)'
-            : 'rgba(90,100,115,0.55)';
+        ctx.fillStyle = isSelected ? palette.accent : palette.edge(dim ? 0.15 : 0.55);
         ctx.fill();
       }
     }
@@ -176,64 +241,67 @@ export function createGraphView(canvas, handlers = {}) {
       const r = radiusOf(body);
       const isSelected = body.id === selectedNodeId;
       const isNeighbour = neighbours.has(body.id) && !isSelected;
-      const isMatch = data.matches.has(body.id);
-      const dim = Boolean(selectedNodeId) && !isSelected && !isNeighbour;
+      const dim = faded(body.id) || (Boolean(selectedNodeId) && !isSelected && !isNeighbour);
+      const shape = shapeForType(node.type);
 
-      ctx.beginPath();
-      ctx.arc(body.x, body.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = dim ? colorFor(node.type, { alpha: 0.22 }) : colorFor(node.type);
+      pathForShape(ctx, shape, body.x, body.y, r);
+      ctx.fillStyle = dim ? colorFor(node.type, { alpha: 0.18 }) : colorFor(node.type);
       ctx.fill();
-
-      // A dashed ring means "no provenance" — structural, not vocabulary-based.
-      ctx.beginPath();
-      ctx.arc(body.x, body.y, r + 0.8, 0, Math.PI * 2);
-      if (node.sources.length === 0) ctx.setLineDash([3 / view.scale, 3 / view.scale]);
-      ctx.strokeStyle = dim ? 'rgba(40,44,52,0.18)' : inkFor(node.type);
+      ctx.strokeStyle = dim ? palette.edge(0.18) : inkFor(node.type);
       ctx.lineWidth = 1.2 / view.scale;
       ctx.stroke();
-      ctx.setLineDash([]);
 
-      if (isMatch) {
-        ctx.beginPath();
-        ctx.arc(body.x, body.y, r + 5 / view.scale, 0, Math.PI * 2);
+      // Dashed halo = candidate / unresolved, or no recorded provenance (§4).
+      const tentative = isTentative(node.status) || node.sources.length === 0;
+      if (tentative) {
+        pathForShape(ctx, shape, body.x, body.y, r + 3.5 / view.scale);
+        ctx.setLineDash([3 / view.scale, 3 / view.scale]);
+        ctx.strokeStyle = statusColor(node.status, { dark: palette.dark, alpha: dim ? 0.3 : 0.95 });
+        ctx.lineWidth = 1.6 / view.scale;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      if (data.matches.has(body.id)) {
+        pathForShape(ctx, shape, body.x, body.y, r + 6 / view.scale);
         ctx.strokeStyle = '#c98a00';
         ctx.lineWidth = 2.2 / view.scale;
         ctx.stroke();
       }
       if (isSelected) {
-        ctx.beginPath();
-        ctx.arc(body.x, body.y, r + 7 / view.scale, 0, Math.PI * 2);
-        ctx.strokeStyle = '#11304f';
+        pathForShape(ctx, shape, body.x, body.y, r + 8 / view.scale);
+        ctx.strokeStyle = palette.accent;
         ctx.lineWidth = 2.4 / view.scale;
         ctx.stroke();
       }
     }
 
-    // --- labels (only when readable, or when they matter)
-    const showAll = view.scale > 0.75 && bodies.length <= 320;
-    if (showAll || selectedNodeId || data.matches.size || hover) {
-      ctx.font = `${12 / view.scale}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      for (const body of bodies) {
-        const node = data.graph.nodeById.get(body.id);
-        if (!node) continue;
-        const important =
-          body.id === selectedNodeId ||
-          data.matches.has(body.id) ||
-          neighbours.has(body.id) ||
-          hover === body.id;
-        if (!showAll && !important) continue;
-        const dim = Boolean(selectedNodeId) && !important;
-        if (dim) continue;
-        const text = node.label.length > 34 ? `${node.label.slice(0, 33)}…` : node.label;
-        const y = body.y + radiusOf(body) + 3 / view.scale;
-        ctx.lineWidth = 3 / view.scale;
-        ctx.strokeStyle = 'rgba(252,252,250,0.9)';
-        ctx.strokeText(text, body.x, y);
-        ctx.fillStyle = important ? '#14243a' : '#4a5261';
-        ctx.fillText(text, body.x, y);
-      }
+    // --- labels: selective (§16)
+    const zoomBudget = Math.round(Math.min(220, Math.max(0, (view.scale - 0.5) * 90)));
+    const topN = bodies.length <= LABEL_ALWAYS_MAX ? bodies.length : zoomBudget;
+    ctx.font = `${12 / view.scale}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    for (const body of bodies) {
+      const node = data.graph.nodeById.get(body.id);
+      if (!node) continue;
+      const important =
+        body.id === selectedNodeId ||
+        data.matches.has(body.id) ||
+        neighbours.has(body.id) ||
+        hover === body.id ||
+        (emphasis ? emphasis.has(body.id) : false);
+      const ranked = (labelRank.get(body.id) ?? Infinity) < topN;
+      if (!important && !ranked) continue;
+      if (!important && faded(body.id)) continue;
+      if (!important && Boolean(selectedNodeId)) continue;
+      const text = node.label.length > 34 ? `${node.label.slice(0, 33)}…` : node.label;
+      const y = body.y + radiusOf(body) + 4 / view.scale;
+      ctx.lineWidth = 3 / view.scale;
+      ctx.strokeStyle = palette.halo;
+      ctx.strokeText(text, body.x, y);
+      ctx.fillStyle = important ? palette.label : palette.labelSoft;
+      ctx.fillText(text, body.x, y);
     }
   }
 
@@ -256,7 +324,7 @@ export function createGraphView(canvas, handlers = {}) {
     rafId = 0;
   }
 
-  function fitTo(points, padding = 60) {
+  function fitTo(points, padding = 56) {
     const { width, height } = cssSize();
     if (!points.length) {
       view.scale = 1;
@@ -265,11 +333,7 @@ export function createGraphView(canvas, handlers = {}) {
       return;
     }
     const b = boundsOf(points);
-    const scale = Math.min(
-      (width - padding * 2) / b.width,
-      (height - padding * 2) / b.height,
-      2.2
-    );
+    const scale = Math.min((width - padding * 2) / b.width, (height - padding * 2) / b.height, 2.2);
     view.scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale));
     view.tx = width / 2 - ((b.x0 + b.x1) / 2) * view.scale;
     view.ty = height / 2 - ((b.y0 + b.y1) / 2) * view.scale;
@@ -325,9 +389,10 @@ export function createGraphView(canvas, handlers = {}) {
       const body = pickNode(world);
       const next = body ? body.id : null;
       const edgeHit = !body && pickEdge(world);
-      canvas.style.cursor = body ? 'pointer' : edgeHit ? 'pointer' : 'grab';
+      canvas.style.cursor = body || edgeHit ? 'pointer' : 'grab';
       if (next !== hover) {
         hover = next;
+        handlers.onHover?.(next);
         draw();
       }
       return;
@@ -360,7 +425,6 @@ export function createGraphView(canvas, handlers = {}) {
       /* pointer already released */
     }
     if (moved) return;
-    // A click, not a drag: select.
     const world = toWorld(event.clientX, event.clientY);
     const body = pickNode(world);
     if (body) {
@@ -382,8 +446,7 @@ export function createGraphView(canvas, handlers = {}) {
     'wheel',
     (event) => {
       event.preventDefault();
-      const factor = Math.exp(-event.deltaY * 0.0016);
-      zoomBy(factor, event);
+      zoomBy(Math.exp(-event.deltaY * 0.0016), event);
     },
     { passive: false }
   );
@@ -395,6 +458,7 @@ export function createGraphView(canvas, handlers = {}) {
     view,
     setData(next) {
       data = { ...data, ...next };
+      computeLabelRank();
       draw();
     },
     setSelection(next) {
@@ -408,6 +472,20 @@ export function createGraphView(canvas, handlers = {}) {
     setVisible(visibleNodes, visibleEdges) {
       data.visibleNodes = visibleNodes;
       data.visibleEdges = visibleEdges;
+      computeLabelRank();
+      draw();
+    },
+    /** Emphasise a subset; everything else is drawn faded (Focus, §13). */
+    setEmphasis(idSet) {
+      emphasis = idSet && idSet.size ? idSet : null;
+      draw();
+    },
+    getEmphasis() {
+      return emphasis;
+    },
+    /** Re-read the CSS palette after a theme change (§18). */
+    setTheme() {
+      palette = readPalette();
       draw();
     },
     recenter,
@@ -415,6 +493,18 @@ export function createGraphView(canvas, handlers = {}) {
     zoomBy,
     fitAll() {
       fitTo(visibleBodies());
+      draw();
+    },
+    /** Back to a neutral camera: fit everything, drop emphasis and hover (§15). */
+    resetView() {
+      emphasis = null;
+      hover = null;
+      fitTo(visibleBodies());
+      draw();
+    },
+    resize() {
+      resizeCanvas();
+      draw();
     },
     draw,
     start,

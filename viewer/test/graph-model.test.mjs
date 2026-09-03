@@ -9,6 +9,8 @@ import {
   findHomonyms,
   incidentEdges,
   hasSources,
+  neighborhood,
+  edgesWithin,
   UNSET,
   PROVENANCE_WITH,
   PROVENANCE_WITHOUT,
@@ -162,4 +164,38 @@ test('relations can be filtered by their own epistemic status (candidates reacha
   const { visibleNodeIds, visibleEdgeIds } = applyFilters(g, { edgeStatus: new Set(['candidate']) });
   assert.equal(visibleNodeIds.size, NODES.length, 'edge-status filtering never hides nodes');
   assert.deepEqual([...visibleEdgeIds], ['e2']);
+});
+
+test('neighborhood walks the graph undirected, hop by hop (CDC §13)', () => {
+  // a -> b -> c -> d, plus an isolated e
+  const graph = buildGraph(
+    ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id, type: 't', label: id })),
+    [
+      { id: 'e1', from: 'a', to: 'b', relation: 'r' },
+      { id: 'e2', from: 'b', to: 'c', relation: 'r' },
+      { id: 'e3', from: 'c', to: 'd', relation: 'r' },
+    ]
+  );
+  assert.deepEqual([...neighborhood(graph, 'a', 1)].sort(), ['a', 'b']);
+  assert.deepEqual([...neighborhood(graph, 'a', 2)].sort(), ['a', 'b', 'c']);
+  // Direction is ignored: an incoming edge is a neighbour too.
+  assert.deepEqual([...neighborhood(graph, 'c', 1)].sort(), ['b', 'c', 'd']);
+  // "All" (hops <= 0) is the whole graph, isolated nodes included.
+  assert.equal(neighborhood(graph, 'a', 0).size, 5);
+  // An unknown node yields nothing rather than guessing.
+  assert.equal(neighborhood(graph, 'zzz', 2).size, 0);
+  // An isolated node is its own neighbourhood.
+  assert.deepEqual([...neighborhood(graph, 'e', 2)], ['e']);
+});
+
+test('edgesWithin keeps only edges whose two endpoints are in the set', () => {
+  const graph = buildGraph(
+    ['a', 'b', 'c'].map((id) => ({ id, type: 't', label: id })),
+    [
+      { id: 'e1', from: 'a', to: 'b', relation: 'r' },
+      { id: 'e2', from: 'b', to: 'c', relation: 'r' },
+    ]
+  );
+  assert.deepEqual([...edgesWithin(graph, new Set(['a', 'b']))], ['e1']);
+  assert.equal(edgesWithin(graph, new Set(['a'])).size, 0);
 });

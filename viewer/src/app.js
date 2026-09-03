@@ -1,10 +1,17 @@
 // Vault Graph viewer — application shell.
 //
 // The viewer never builds a graph: it reads one that a repository already
-// exposes under .vault-graph/ and projects it (CDC §1, §26).
+// exposes under .vault-graph/ and projects it in 2D or 3D (CDC §1, §26, §33).
 import { $ } from './ui/dom.js';
 import { createGraphView } from './ui/graph-view.js';
-import { renderMeta, renderFilters, renderInspector, renderWarnings, renderLegend } from './ui/panels.js';
+import {
+  renderStats,
+  renderFilters,
+  renderInspector,
+  renderWarnings,
+  renderLegend,
+  renderSearchResults,
+} from './ui/panels.js';
 import { readParams, classifyInput, buildAppUrl } from './lib/params.js';
 import { resolveTarget, loadVaultGraph, countMismatch, fetchText, LoadError } from './lib/loader.js';
 import {
@@ -13,11 +20,14 @@ import {
   discoverEdgeValues,
   applyFilters,
   searchNodes,
+  neighborhood,
   PROVENANCE_WITHOUT,
 } from './lib/graph-model.js';
 import { createSimulation } from './lib/layout.js';
-import { blobUrl } from './lib/github.js';
-import { formatCount } from './lib/format.js';
+import { blobUrl, apiRepoUrl } from './lib/github.js';
+import { formatCount, formatDate, formatRelative, shortSha } from './lib/format.js';
+import { readPrefs, writePrefs, effectiveTheme } from './lib/prefs.js';
+import { isTentative } from './lib/colors.js';
 
 const BOOTSTRAP_ZIP =
   'https://github.com/prettozm/vaultgraph/releases/latest/download/vault-graph-bootstrap.zip';
@@ -53,6 +63,8 @@ const screens = {
   graph: $('#screen-graph'),
 };
 
+const MOBILE = '(max-width: 768px)';
+
 const state = {
   target: null,
   manifestUrl: null,
@@ -65,16 +77,75 @@ const state = {
   matches: new Set(),
   sim: null,
   view: null,
+  view3d: null,
+  view3dFailed: false,
+  projections: [],
+  projection: 'context',
+  mode: '2d',
+  focusHops: null,
+  emphasisTimer: 0,
+  quick: null,
+  drawerOpen: false,
+  inspectorOpen: false,
+  prefs: readPrefs(),
   loadToken: 0,
 };
 
+function isMobile() {
+  try {
+    return globalThis.matchMedia?.(MOBILE).matches ?? false;
+  } catch {
+    return false;
+  }
+}
+
+function activeView() {
+  return state.mode === '3d' && state.view3d ? state.view3d : state.view;
+}
+
 function showScreen(name) {
   for (const [key, node] of Object.entries(screens)) node.hidden = key !== name;
-  if (name !== 'graph') state.view?.stop();
+  if (name !== 'graph') {
+    state.view?.stop();
+    state.view3d?.stop();
+  }
 }
 
 // --------------------------------------------------------------------------
-// Loading
+// Theme (§18)
+// --------------------------------------------------------------------------
+
+function applyTheme() {
+  const choice = state.prefs.theme ?? 'system';
+  const root = document.documentElement;
+  if (choice === 'system') delete root.dataset.theme;
+  else root.dataset.theme = choice;
+  const effective = effectiveTheme(choice);
+  const toggle = $('#theme-toggle');
+  if (toggle) {
+    toggle.textContent = effective === 'dark' ? '☾' : '☀';
+    toggle.title = `Theme: ${choice} — click to switch`;
+    toggle.setAttribute('aria-label', `Colour theme: ${choice}. Switch theme.`);
+  }
+  state.view?.setTheme?.();
+  state.view3d?.setTheme?.();
+  return effective;
+}
+
+function isDark() {
+  return effectiveTheme(state.prefs.theme ?? 'system') === 'dark';
+}
+
+function cycleTheme() {
+  const order = ['system', 'light', 'dark'];
+  const next = order[(order.indexOf(state.prefs.theme ?? 'system') + 1) % order.length];
+  state.prefs = writePrefs({ theme: next });
+  applyTheme();
+  renderAll();
+}
+
+// --------------------------------------------------------------------------
+// Loading & error screens (§25)
 // --------------------------------------------------------------------------
 
 function setLoading(message, detail = '') {
@@ -84,26 +155,60 @@ function setLoading(message, detail = '') {
 }
 
 function describeError(err) {
-  if (!(err instanceof LoadError)) return { message: String(err?.message ?? err), detail: '' };
+  if (!(err instanceof LoadError)) {
+    return { title: 'The graph could not be loaded.', message: String(err?.message ?? err), hint: '', detail: '' };
+  }
   const detail = [err.details?.url, err.details?.status ? `HTTP ${err.details.status}` : null]
     .filter(Boolean)
     .join(' — ');
+  const what = err.details?.what ?? 'file';
   switch (err.code) {
+    case 'repo-not-found':
+      return {
+        title: 'Repository not found.',
+        message: 'GitHub does not know this repository.',
+        hint: 'Check the owner and the name. Private repositories are not supported in v0.',
+        detail,
+      };
+    case 'repo-private':
+      return {
+        title: 'Repository not accessible.',
+        message: 'This repository is private, or GitHub refused the request.',
+        hint: 'The viewer reads public repositories only — no authentication, no backend.',
+        detail,
+      };
     case 'network':
       return {
-        message: 'Network error: the file could not be reached. Check your connection, then retry.',
+        title: 'Network error.',
+        message: 'The file could not be reached.',
+        hint: 'Check your connection (or the CORS policy of the host), then retry.',
         detail,
       };
     case 'not-found':
-      return { message: `A file referenced by the manifest is missing: ${err.details?.what ?? 'file'}.`, detail };
-    case 'http':
-      return { message: err.message, detail };
+      return {
+        title: 'A referenced file is missing.',
+        message: `The manifest points at ${what}, but it is not there.`,
+        hint: 'The .vault-graph folder is incomplete: regenerate the graph in the repository.',
+        detail,
+      };
     case 'parse':
-      return { message: err.message, detail };
+      return {
+        title: 'Invalid JSON.',
+        message: err.message,
+        hint: 'The file exists but could not be parsed. It has to be regenerated in the repository.',
+        detail,
+      };
     case 'format':
-      return { message: err.message, detail };
+      return {
+        title: 'Unsupported Vault Graph.',
+        message: err.message,
+        hint: 'The manifest is not a Vault Graph manifest, or announces a format/version this viewer does not read.',
+        detail,
+      };
+    case 'http':
+      return { title: 'The graph could not be loaded.', message: err.message, hint: '', detail };
     default:
-      return { message: err.message, detail };
+      return { title: 'The graph could not be loaded.', message: err.message, hint: '', detail };
   }
 }
 
@@ -115,16 +220,39 @@ function showIncompatible(target) {
 }
 
 function showError(err) {
-  const { message, detail } = describeError(err);
+  const { title, message, hint, detail } = describeError(err);
+  $('#error-title').textContent = title;
   $('#error-message').textContent = message;
+  $('#error-hint').textContent = hint;
   $('#error-detail').textContent = detail;
   showScreen('error');
+}
+
+/**
+ * Best-effort: distinguish "no Vault Graph here" from "no such repository"
+ * (§25). Any failure of the probe falls back to the incompatible screen.
+ * @returns {Promise<'missing'|'private'|'ok'|'unknown'>}
+ */
+async function probeRepository(repo) {
+  if (!repo?.owner || !repo?.repo) return 'unknown';
+  try {
+    const response = await fetch(apiRepoUrl(repo.owner, repo.repo), {
+      cache: 'no-store',
+      headers: { Accept: 'application/vnd.github+json' },
+    });
+    if (response.ok) return 'ok';
+    if (response.status === 404) return 'missing';
+    if (response.status === 401 || response.status === 403) return 'private';
+    return 'unknown';
+  } catch {
+    return 'unknown';
+  }
 }
 
 async function load(target, { refresh = false } = {}) {
   const token = ++state.loadToken;
   state.target = target;
-  const keepUi = refresh && state.graph;
+  const keepUi = refresh && Boolean(state.graph);
 
   setLoading(
     refresh ? 'Refreshing the graph…' : 'Resolving the repository…',
@@ -149,10 +277,18 @@ async function load(target, { refresh = false } = {}) {
     payload = await loadVaultGraph(resolved.manifestUrl, { cacheBust: refresh ? Date.now() : null });
   } catch (err) {
     if (token !== state.loadToken) return;
-    // A missing manifest means "this repository has no Vault Graph" (§20);
-    // any other failure is a real error the user should see (§20 note).
+    // A missing manifest means "this repository has no Vault Graph" (§24) —
+    // unless the repository itself does not exist or is private (§25).
     if (err instanceof LoadError && err.code === 'not-found' && err.details?.what === 'manifest.json') {
-      showIncompatible(resolved.manifestUrl);
+      const probe = target.kind === 'repo' ? await probeRepository(resolved.repo) : 'unknown';
+      if (token !== state.loadToken) return;
+      if (probe === 'missing') {
+        showError(new LoadError('Repository not found.', 'repo-not-found', { url: resolved.manifestUrl }));
+      } else if (probe === 'private') {
+        showError(new LoadError('Repository not accessible.', 'repo-private', { url: resolved.manifestUrl }));
+      } else {
+        showIncompatible(resolved.manifestUrl);
+      }
     } else {
       showError(err);
     }
@@ -162,12 +298,23 @@ async function load(target, { refresh = false } = {}) {
 
   payload.warnings.unshift(...resolved.notes);
   state.payload = payload;
+  if (target.kind === 'repo' && resolved.repo) {
+    state.prefs = writePrefs({ lastRepo: `${resolved.repo.owner}/${resolved.repo.repo}` });
+  }
   installGraph(payload, { keepUi });
 }
 
 // --------------------------------------------------------------------------
-// Graph installation & rendering
+// Graph installation
 // --------------------------------------------------------------------------
+
+function intersectSelection(previous, facetValues) {
+  const next = new Set();
+  if (!previous) return next;
+  const available = new Set(facetValues.map((v) => v.value));
+  for (const value of previous) if (available.has(value)) next.add(value);
+  return next;
+}
 
 function installGraph(payload, { keepUi = false } = {}) {
   const graph = buildGraph(payload.nodeRecords, payload.edgeRecords);
@@ -209,109 +356,143 @@ function installGraph(payload, { keepUi = false } = {}) {
     state.view = createGraphView(canvas, {
       onSelectNode: (id) => selectNode(id, { focus: false }),
       onSelectEdge: (id) => selectEdge(id),
-      onClearSelection: () => {
-        state.selection = null;
-        state.view.setSelection(null);
-        renderInspectorPanel();
-      },
+      onClearSelection: () => clearSelection(),
     });
   }
 
   showScreen('graph');
-  $('#topbar-repo').textContent = state.repo
-    ? `${state.repo.owner}/${state.repo.repo}${state.repo.ref ? ` @ ${state.repo.ref}` : ''}`
-    : payload.manifestUrl;
-
+  renderHeader();
   state.view.setData({ graph, sim: state.sim, matches: state.matches });
+  state.view3d?.setData?.({ graph, sim: state.sim, matches: state.matches });
+  refreshProjections();
   applyAndRender({ recenter: true });
-  state.view.start();
-  renderMetaPanel();
+  activeView()?.start?.();
+  if (state.selection) openInspector();
 }
 
-function intersectSelection(previous, facetValues) {
-  const next = new Set();
-  if (!previous) return next;
-  const available = new Set(facetValues.map((v) => v.value));
-  for (const value of previous) if (available.has(value)) next.add(value);
-  return next;
+// --------------------------------------------------------------------------
+// Header (§7, §8, §29)
+// --------------------------------------------------------------------------
+
+function renderHeader() {
+  const { payload, repo } = state;
+  const meta = payload?.meta ?? {};
+  const summary = payload?.summary ?? {};
+
+  $('#topbar-repo').textContent = repo
+    ? `${repo.owner}/${repo.repo}${repo.ref ? ` @ ${repo.ref}` : ''}`
+    : payload?.manifestUrl ?? '';
+  $('#topbar-version').textContent = meta.version ? `Vault Graph ${meta.version}` : 'Vault Graph (version unknown)';
+
+  const generatedAt = meta.generatedAt ?? summary.generatedAt ?? null;
+  const exact = formatDate(generatedAt);
+  const generated = $('#topbar-generated');
+  generated.textContent = `Generated ${formatRelative(generatedAt)}`;
+  generated.title = exact;
+  generated.onclick = () => {
+    generated.textContent = generated.textContent.startsWith('Generated ' + exact)
+      ? `Generated ${formatRelative(generatedAt)}`
+      : `Generated ${exact}`;
+  };
+
+  const commit = meta.commit ?? summary.sourceCommit ?? null;
+  const commitNode = $('#topbar-commit');
+  if (commit) {
+    commitNode.textContent = `Commit ${shortSha(commit)}`;
+    commitNode.title = commit;
+    if (repo) {
+      commitNode.href = `https://github.com/${repo.owner}/${repo.repo}/commit/${commit}`;
+      commitNode.removeAttribute('aria-disabled');
+    } else {
+      commitNode.removeAttribute('href');
+    }
+    commitNode.hidden = false;
+  } else {
+    commitNode.textContent = '';
+    commitNode.hidden = true;
+  }
+
+  const mismatches = payload?.summaryAvailable ? countMismatch(payload.summary, state.graph) : [];
+  const fetched = `Fetched ${formatDate(payload?.fetchedAt, { empty: '—' })} — the date that matters is the generation date.`;
+  $('#topbar-fetched').textContent = mismatches.length ? `${fetched} · ${mismatches.join(' ')}` : fetched;
 }
 
-function sourceLinker() {
-  if (!state.repo) return null;
-  const ref = state.payload?.meta?.commit ?? state.repo.ref;
-  const { owner, repo } = state.repo;
-  return (source) =>
-    blobUrl({
-      owner,
-      repo,
-      ref,
-      file: source.file,
-      lineStart: source.line_start,
-      lineEnd: source.line_end,
-    });
+// --------------------------------------------------------------------------
+// Stats strip, filters, legend, inspector
+// --------------------------------------------------------------------------
+
+function facetCount(facetKey, predicate) {
+  return (state.facets?.[facetKey] ?? [])
+    .filter((entry) => predicate(entry.value))
+    .reduce((sum, entry) => sum + entry.count, 0);
 }
 
-function renderMetaPanel() {
-  const { payload, graph } = state;
-  renderMeta($('#meta'), {
-    repo: state.repo,
-    meta: payload.meta,
-    summary: payload.summary,
-    nodeCount: graph.nodes.length,
-    edgeCount: graph.edges.length,
-    mismatches: payload.summaryAvailable ? countMismatch(payload.summary, graph) : [],
-    fetchedAt: payload.fetchedAt,
-    manifestUrl: payload.manifestUrl,
+function candidateEdgeIds() {
+  return (state.graph?.edges ?? []).filter((e) => isTentative(e.status)).map((e) => e.id);
+}
+
+function unresolvedNodeIds() {
+  return (state.graph?.nodes ?? [])
+    .filter((n) => isTentative(n.status) || (state.graph.degree.get(n.id) ?? 0) === 0)
+    .map((n) => n.id);
+}
+
+function quickActions() {
+  const candidateCount = candidateEdgeIds().length;
+  const unresolvedCount = unresolvedNodeIds().length;
+  return [
+    {
+      kind: 'candidate',
+      label: 'Candidates',
+      count: candidateCount,
+      active: state.quick === 'candidate',
+      title: 'Show only candidate relations, fade the rest, and open the first one',
+    },
+    {
+      kind: 'unresolved',
+      label: 'Unresolved',
+      count: unresolvedCount,
+      active: state.quick === 'unresolved',
+      title: 'Show unresolved or orphan nodes, fade the rest, and open the first one',
+    },
+  ];
+}
+
+function activeChips() {
+  const chips = [];
+  for (const [facet, values] of Object.entries(state.filters)) {
+    for (const value of values) {
+      const label = value === PROVENANCE_WITHOUT ? 'no sources' : value;
+      chips.push({ facet, value, label });
+    }
+  }
+  return chips;
+}
+
+function activeFilterCount() {
+  return Object.values(state.filters).reduce((sum, set) => sum + set.size, 0);
+}
+
+function renderStatsStrip(visibleNodes, visibleEdges) {
+  renderStats($('#stats'), {
+    nodeCount: state.graph.nodes.length,
+    edgeCount: state.graph.edges.length,
+    visibleNodes,
+    visibleEdges,
+    quickActions: quickActions(),
+    activeChips: activeChips(),
+    onQuick: (action) => runQuickAction(action),
+    onRemoveChip: (chip) => {
+      state.filters[chip.facet].delete(chip.value);
+      applyAndRender();
+    },
   });
-  renderWarnings($('#warnings'), [...payload.warnings, ...graph.issues]);
-  renderLegend($('#legend'), state.facets.type);
-}
-
-function quickFilters() {
-  const out = [];
-  for (const entry of state.facets.status) {
-    const lower = entry.value.toLowerCase();
-    if (lower !== 'candidate' && lower !== 'unresolved') continue;
-    out.push({
-      key: 'status',
-      value: entry.value,
-      label: entry.value,
-      count: entry.count,
-      active: state.filters.status.has(entry.value),
-      title: `Show only nodes with status "${entry.value}"`,
-    });
-  }
-  for (const entry of state.facets.edgeStatus ?? []) {
-    const lower = entry.value.toLowerCase();
-    if (lower !== 'candidate' && lower !== 'unresolved') continue;
-    out.push({
-      key: 'edgeStatus',
-      value: entry.value,
-      label: `${entry.value} relations`,
-      count: entry.count,
-      active: state.filters.edgeStatus.has(entry.value),
-      title: `Show only relations with status "${entry.value}"`,
-    });
-  }
-  const noSources = state.facets.provenance.find((p) => p.value === PROVENANCE_WITHOUT);
-  if (noSources) {
-    out.push({
-      key: 'provenance',
-      value: PROVENANCE_WITHOUT,
-      label: 'no sources',
-      count: noSources.count,
-      active: state.filters.provenance.has(PROVENANCE_WITHOUT),
-      title: 'Show only nodes with no recorded provenance',
-    });
-  }
-  return out;
 }
 
 function renderFilterPanel() {
   renderFilters($('#filters'), {
     facets: state.facets,
     filters: state.filters,
-    quickFilters: quickFilters(),
     onToggle: (facet, value) => {
       const set = state.filters[facet];
       if (set.has(value)) set.delete(value);
@@ -322,13 +503,20 @@ function renderFilterPanel() {
       state.filters[facet].clear();
       applyAndRender();
     },
-    onQuick: (q) => {
-      const set = state.filters[q.key];
-      if (set.has(q.value)) set.delete(q.value);
-      else set.add(q.value);
-      applyAndRender();
-    },
   });
+  const count = activeFilterCount();
+  const badge = $('#filter-badge');
+  badge.textContent = String(count);
+  badge.hidden = count === 0;
+}
+
+function sourceLinker() {
+  if (!state.repo) return null;
+  // Provenance always points at the exact commit the graph was built from (§29).
+  const ref = state.payload?.meta?.commit ?? state.repo.ref;
+  const { owner, repo } = state.repo;
+  return (source) =>
+    blobUrl({ owner, repo, ref, file: source.file, lineStart: source.line_start, lineEnd: source.line_end });
 }
 
 function renderInspectorPanel() {
@@ -338,68 +526,349 @@ function renderInspectorPanel() {
     linkFor: sourceLinker(),
     onNavigate: (id) => selectNode(id, { focus: true }),
     onSelectEdge: (id) => selectEdge(id),
-    emptyHint: 'Click a node or a relation in the graph, or search by label.',
+    emptyHint: 'Tap a node or a relation in the graph, or search by label.',
+    dark: isDark(),
   });
+}
+
+function renderAll() {
+  if (!state.graph) return;
+  const { visibleNodeIds, visibleEdgeIds } = applyFilters(state.graph, state.filters);
+  renderStatsStrip(visibleNodeIds.size, visibleEdgeIds.size);
+  renderFilterPanel();
+  renderInspectorPanel();
+  renderLegend($('#legend'), { typeFacet: state.facets.type, statusFacet: state.facets.status, dark: isDark() });
+  renderWarnings($('#warnings'), [...(state.payload?.warnings ?? []), ...state.graph.issues]);
 }
 
 function applyAndRender({ recenter = false } = {}) {
   const { visibleNodeIds, visibleEdgeIds } = applyFilters(state.graph, state.filters);
-  state.view.setVisible(visibleNodeIds, visibleEdgeIds);
-  state.view.setSelection(state.selection);
-  state.view.setMatches(state.matches);
-  if (recenter) state.view.recenter();
+  for (const view of [state.view, state.view3d]) {
+    if (!view) continue;
+    view.setVisible(visibleNodeIds, visibleEdgeIds);
+    view.setSelection(state.selection);
+    view.setMatches(state.matches);
+  }
+  if (recenter) activeView()?.recenter?.();
 
-  const badge = $('#visible-count');
-  const total = state.graph.nodes.length;
-  const totalEdges = state.graph.edges.length;
-  badge.textContent = total
-    ? `${formatCount(visibleNodeIds.size)} / ${formatCount(total)} nodes · ${formatCount(visibleEdgeIds.size)} / ${formatCount(totalEdges)} edges`
+  $('#visible-count').textContent = state.graph.nodes.length
+    ? `${formatCount(visibleNodeIds.size)} / ${formatCount(state.graph.nodes.length)} nodes · ${formatCount(visibleEdgeIds.size)} / ${formatCount(state.graph.edges.length)} edges`
     : 'This Vault Graph is empty — no nodes have been generated yet.';
 
-  renderFilterPanel();
-  renderInspectorPanel();
+  renderAll();
+  updateFocusButtons();
 }
 
-function selectNode(id, { focus = false } = {}) {
-  state.selection = { kind: 'node', id };
-  state.view.setSelection(state.selection);
-  if (focus) state.view.focusNode(id);
+// --------------------------------------------------------------------------
+// Selection, focus, quick actions
+// --------------------------------------------------------------------------
+
+function setEmphasis(idSet) {
+  for (const view of [state.view, state.view3d]) view?.setEmphasis?.(idSet);
+}
+
+function clearSelection() {
+  state.selection = null;
+  state.focusHops = null;
+  setEmphasis(null);
+  for (const view of [state.view, state.view3d]) view?.setSelection?.(null);
+  closeInspector();
   renderInspectorPanel();
+  updateFocusButtons();
+}
+
+function selectNode(id, { focus = false, open = true } = {}) {
+  state.selection = { kind: 'node', id };
+  for (const view of [state.view, state.view3d]) view?.setSelection?.(state.selection);
+  if (focus) activeView()?.focusNode?.(id);
+  if (open) openInspector();
+  renderInspectorPanel();
+  updateFocusButtons();
 }
 
 function selectEdge(id) {
   state.selection = { kind: 'edge', id };
-  state.view.setSelection(state.selection);
+  for (const view of [state.view, state.view3d]) view?.setSelection?.(state.selection);
+  openInspector();
   renderInspectorPanel();
+  updateFocusButtons();
+}
+
+function updateFocusButtons() {
+  const enabled = state.selection?.kind === 'node';
+  for (const button of document.querySelectorAll('.focus-group [data-hops]')) {
+    button.disabled = !enabled;
+    const hops = Number(button.dataset.hops);
+    const active = enabled && state.focusHops === hops;
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+}
+
+function applyFocus(hops) {
+  if (state.selection?.kind !== 'node') return;
+  clearTimeout(state.emphasisTimer);
+  state.focusHops = hops;
+  if (!hops) {
+    setEmphasis(null);
+  } else {
+    setEmphasis(neighborhood(state.graph, state.selection.id, hops));
+  }
+  activeView()?.focusNode?.(state.selection.id);
+  updateFocusButtons();
+}
+
+/** Temporary neighbourhood emphasis after a search hit (§12). */
+function flashNeighbourhood(id) {
+  clearTimeout(state.emphasisTimer);
+  setEmphasis(neighborhood(state.graph, id, 1));
+  state.emphasisTimer = setTimeout(() => {
+    if (state.focusHops) return;
+    setEmphasis(null);
+  }, 2000);
+}
+
+function runQuickAction(action) {
+  if (state.quick === action.kind) {
+    state.quick = null;
+    state.filters.edgeStatus.clear();
+    state.filters.status.clear();
+    setEmphasis(null);
+    applyAndRender();
+    return;
+  }
+  state.quick = action.kind;
+  if (action.kind === 'candidate') {
+    const edges = (state.graph.edges ?? []).filter((e) => isTentative(e.status));
+    state.filters.edgeStatus = new Set(edges.map((e) => e.status));
+    const nodeIds = new Set();
+    for (const e of edges) {
+      nodeIds.add(e.from);
+      nodeIds.add(e.to);
+    }
+    setEmphasis(nodeIds);
+    applyAndRender();
+    if (edges.length) selectEdge(edges[0].id);
+  } else {
+    const nodes = (state.graph.nodes ?? []).filter(
+      (n) => isTentative(n.status) || (state.graph.degree.get(n.id) ?? 0) === 0
+    );
+    const statuses = new Set(nodes.filter((n) => isTentative(n.status)).map((n) => n.status));
+    state.filters.status = statuses;
+    setEmphasis(new Set(nodes.map((n) => n.id)));
+    applyAndRender();
+    if (nodes.length) selectNode(nodes[0].id, { focus: true });
+  }
 }
 
 // --------------------------------------------------------------------------
-// Search
+// Panels: filters drawer & inspector
+// --------------------------------------------------------------------------
+
+function openDrawer() {
+  state.drawerOpen = true;
+  $('#filters-drawer').hidden = false;
+  $('#drawer-backdrop').hidden = !isMobile();
+  $('#filters-button').setAttribute('aria-expanded', 'true');
+  resizeViews();
+}
+
+function closeDrawer() {
+  state.drawerOpen = false;
+  $('#filters-drawer').hidden = true;
+  $('#drawer-backdrop').hidden = true;
+  $('#filters-button').setAttribute('aria-expanded', 'false');
+  resizeViews();
+}
+
+function openInspector() {
+  state.inspectorOpen = true;
+  $('#inspector-panel').hidden = false;
+  resizeViews();
+}
+
+function closeInspector() {
+  state.inspectorOpen = false;
+  $('#inspector-panel').hidden = true;
+  resizeViews();
+}
+
+/** The canvas is re-measured, never re-laid-out: positions stay put (§20, §31). */
+function resizeViews() {
+  requestAnimationFrame(() => {
+    state.view?.resize?.();
+    state.view3d?.resize?.();
+  });
+}
+
+// --------------------------------------------------------------------------
+// Search (§12)
 // --------------------------------------------------------------------------
 
 function runSearch(query) {
   const ids = searchNodes(state.graph?.nodes ?? [], query);
   state.matches = new Set(ids);
-  const count = $('#search-count');
-  count.textContent = query.trim() ? `${ids.length} match${ids.length === 1 ? '' : 'es'}` : '';
-  state.view?.setMatches(state.matches);
-  if (ids.length) {
-    const { visibleNodeIds } = applyFilters(state.graph, state.filters);
-    const first = ids.find((id) => visibleNodeIds.has(id)) ?? ids[0];
-    state.view?.focusNode(first);
-  }
+  for (const view of [state.view, state.view3d]) view?.setMatches?.(state.matches);
+  const nodes = ids.slice(0, 8).map((id) => state.graph.nodeById.get(id)).filter(Boolean);
+  renderSearchResults($('#search-results'), {
+    nodes,
+    query,
+    onPick: (id) => pickSearchResult(id),
+  });
+  $('#search-input').setAttribute('aria-expanded', query.trim() ? 'true' : 'false');
+  return ids;
+}
+
+function pickSearchResult(id) {
+  $('#search-results').hidden = true;
+  $('#search-input').setAttribute('aria-expanded', 'false');
+  selectNode(id, { focus: true });
+  flashNeighbourhood(id);
 }
 
 // --------------------------------------------------------------------------
-// Navigation & wiring
+// 2D / 3D and projections (§9, §10, §26)
 // --------------------------------------------------------------------------
+
+function setGraphNote(text) {
+  const note = $('#graph-note');
+  note.textContent = text ?? '';
+  note.hidden = !text;
+}
+
+async function ensure3D() {
+  if (state.view3d || state.view3dFailed) return state.view3d;
+  try {
+    const module = await import('./ui/graph-view-3d.js');
+    const factory = module.createGraphView3D;
+    if (typeof factory !== 'function') throw new Error('createGraphView3D is missing');
+    const canvas = $('#graph-canvas-3d');
+    state.view3d = factory(canvas, {
+      onSelect: (sel) => {
+        if (!sel) return clearSelection();
+        if (typeof sel === 'string') return selectNode(sel);
+        if (sel.kind === 'edge') return selectEdge(sel.id);
+        return selectNode(sel.id ?? sel);
+      },
+      onHover: () => {},
+      onViewChange: () => {},
+    });
+    if (state.graph) state.view3d.setData({ graph: state.graph, sim: state.sim, matches: state.matches });
+  } catch (err) {
+    state.view3dFailed = true;
+    state.view3d = null;
+    console.warn('3D view unavailable:', err?.message ?? err);
+  }
+  return state.view3d;
+}
+
+async function setMode(mode, { persist = true } = {}) {
+  const next = mode === '3d' ? '3d' : '2d';
+  if (next === '3d') {
+    const view = await ensure3D();
+    if (!view) {
+      setGraphNote('3D view unavailable in this build — staying in 2D.');
+      applyModeButtons('2d');
+      state.mode = '2d';
+      return;
+    }
+  }
+  state.mode = next;
+  applyModeButtons(next);
+  $('#projection-wrap').hidden = next !== '3d';
+  $('#graph-canvas').hidden = next === '3d';
+  $('#graph-canvas-3d').hidden = next !== '3d';
+  if (next === '3d') {
+    state.view?.stop();
+    state.view3d.setVisible(...currentVisibility());
+    state.view3d.setSelection(state.selection);
+    state.view3d.setMatches(state.matches);
+    state.view3d.setProjection?.(state.projection);
+    state.view3d.resize?.();
+    state.view3d.start?.();
+    setGraphNote(projectionNote(state.projection));
+  } else {
+    state.view3d?.stop?.();
+    state.view?.resize?.();
+    state.view?.start?.();
+    setGraphNote('');
+  }
+  if (persist) {
+    state.prefs = writePrefs({ view: state.mode, projection: state.projection });
+    syncUrl();
+  }
+}
+
+function applyModeButtons(mode) {
+  $('#view-2d').setAttribute('aria-pressed', mode === '2d' ? 'true' : 'false');
+  $('#view-3d').setAttribute('aria-pressed', mode === '3d' ? 'true' : 'false');
+}
+
+function currentVisibility() {
+  const { visibleNodeIds, visibleEdgeIds } = applyFilters(state.graph, state.filters);
+  return [visibleNodeIds, visibleEdgeIds];
+}
+
+function projectionNote(id) {
+  const entry = state.projections.find((p) => p.id === id);
+  if (entry && entry.available === false) return `${entry.label} projection unavailable — ${entry.reason ?? 'missing data'}.`;
+  return '';
+}
+
+async function refreshProjections() {
+  const select = $('#projection-select');
+  let list = [];
+  try {
+    const module = await import('./lib/projections.js');
+    list = module.listProjections?.(state.graph) ?? [];
+  } catch {
+    list = [];
+  }
+  state.projections = list;
+  while (select.firstChild) select.removeChild(select.firstChild);
+  for (const entry of list) {
+    const option = document.createElement('option');
+    option.value = entry.id;
+    option.textContent = entry.available === false ? `${entry.label} (unavailable)` : entry.label;
+    option.disabled = entry.available === false;
+    if (entry.reason) option.title = entry.reason;
+    select.append(option);
+  }
+  const wanted = list.find((p) => p.id === state.projection && p.available !== false)
+    ? state.projection
+    : list.find((p) => p.available !== false)?.id ?? state.projection;
+  state.projection = wanted;
+  select.value = wanted;
+}
+
+function setProjection(id) {
+  state.projection = id;
+  state.view3d?.setProjection?.(id);
+  setGraphNote(projectionNote(id));
+  state.prefs = writePrefs({ projection: id });
+  syncUrl();
+}
+
+// --------------------------------------------------------------------------
+// Navigation & URL
+// --------------------------------------------------------------------------
+
+function syncUrl() {
+  if (!state.target) return;
+  try {
+    history.replaceState({}, '', buildAppUrl(location.href, state.target, { view: state.mode, projection: state.projection }));
+  } catch {
+    /* file:// or restricted context — the app still works, just not bookmarkable */
+  }
+}
 
 function goHome({ push = true } = {}) {
   state.loadToken += 1;
   state.view?.stop();
+  state.view3d?.stop?.();
   if (push) pushUrl(new URL(location.href.split('?')[0]).toString());
   $('#home-error').hidden = true;
   showScreen('home');
+  $('#repo-input').value = state.prefs.lastRepo ?? '';
   $('#repo-input').focus();
 }
 
@@ -407,7 +876,7 @@ function pushUrl(url) {
   try {
     history.pushState({}, '', url);
   } catch {
-    /* file:// or restricted context — the app still works, just not bookmarkable */
+    /* file:// or restricted context */
   }
 }
 
@@ -415,7 +884,6 @@ function targetFromParams(params) {
   if (params.manifest) {
     const classified = classifyInput(params.manifest, location.href);
     if (classified.kind === 'manifest') return classified;
-    // Tolerate a manifest= value that is not literally named manifest.json.
     try {
       return { kind: 'manifest', value: new URL(params.manifest, location.href).toString() };
     } catch {
@@ -429,23 +897,31 @@ function targetFromParams(params) {
   return null;
 }
 
-function bootFromLocation({ push = false } = {}) {
+async function bootFromLocation({ push = false } = {}) {
   const params = readParams(location.search);
+  state.mode = params.view ?? state.prefs.view ?? '2d';
+  state.projection = params.projection ?? state.prefs.projection ?? 'context';
+  applyModeButtons(state.mode);
   const target = targetFromParams(params);
   if (!target) {
     showScreen('home');
+    $('#repo-input').value = state.prefs.lastRepo ?? '';
     $('#repo-input').focus();
     return;
   }
-  if (push) pushUrl(buildAppUrl(location.href, target));
-  load(target);
+  if (push) pushUrl(buildAppUrl(location.href, target, { view: state.mode, projection: state.projection }));
+  await load(target);
+  if (state.graph && state.mode === '3d') await setMode('3d', { persist: false });
 }
+
+// --------------------------------------------------------------------------
+// Wiring
+// --------------------------------------------------------------------------
 
 function wire() {
   $('#home-form').addEventListener('submit', (event) => {
     event.preventDefault();
-    const value = $('#repo-input').value;
-    const classified = classifyInput(value, location.href);
+    const classified = classifyInput($('#repo-input').value, location.href);
     const errorNode = $('#home-error');
     if (classified.kind === 'invalid') {
       errorNode.textContent = classified.reason;
@@ -453,7 +929,7 @@ function wire() {
       return;
     }
     errorNode.hidden = true;
-    pushUrl(buildAppUrl(location.href, classified));
+    pushUrl(buildAppUrl(location.href, classified, { view: state.mode, projection: state.projection }));
     load(classified);
   });
 
@@ -470,29 +946,96 @@ function wire() {
   $('#refresh-button').addEventListener('click', () => {
     if (state.target) load(state.target, { refresh: true });
   });
+  $('#theme-toggle').addEventListener('click', cycleTheme);
 
-  $('#recenter-button').addEventListener('click', () => state.view?.recenter());
-  $('#zoom-in').addEventListener('click', () => state.view?.zoomBy(1.25));
-  $('#zoom-out').addEventListener('click', () => state.view?.zoomBy(0.8));
+  $('#view-2d').addEventListener('click', () => setMode('2d'));
+  $('#view-3d').addEventListener('click', () => setMode('3d'));
+  $('#projection-select').addEventListener('change', (event) => setProjection(event.target.value));
+
+  $('#filters-button').addEventListener('click', () => (state.drawerOpen ? closeDrawer() : openDrawer()));
+  $('#filters-close').addEventListener('click', closeDrawer);
+  $('#drawer-backdrop').addEventListener('click', closeDrawer);
+  $('#filters-reset').addEventListener('click', () => {
+    for (const set of Object.values(state.filters)) set.clear();
+    state.quick = null;
+    setEmphasis(null);
+    applyAndRender();
+  });
+  $('#inspector-close').addEventListener('click', () => {
+    closeInspector();
+  });
+
+  $('#recenter-button').addEventListener('click', () => activeView()?.recenter?.());
+  $('#fit-button').addEventListener('click', () => activeView()?.fitAll?.());
+  $('#reset-view-button').addEventListener('click', () => {
+    state.focusHops = null;
+    state.quick = null;
+    setEmphasis(null);
+    activeView()?.resetView?.();
+    updateFocusButtons();
+  });
+  $('#zoom-in').addEventListener('click', () => activeView()?.zoomBy?.(1.25));
+  $('#zoom-out').addEventListener('click', () => activeView()?.zoomBy?.(0.8));
+
+  for (const button of document.querySelectorAll('.focus-group [data-hops]')) {
+    button.addEventListener('click', () => applyFocus(Number(button.dataset.hops)));
+  }
 
   let searchTimer = 0;
-  $('#search-input').addEventListener('input', (event) => {
+  const input = $('#search-input');
+  input.addEventListener('input', (event) => {
     const value = event.target.value;
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => runSearch(value), 120);
+  });
+  input.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    const ids = runSearch(input.value);
+    if (ids.length) pickSearchResult(ids[0]);
+  });
+  input.addEventListener('focus', () => {
+    if (input.value.trim()) runSearch(input.value);
+  });
+  document.addEventListener('click', (event) => {
+    if (!$('#search-results').hidden && !event.target.closest('.search-wrap')) {
+      $('#search-results').hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+    }
   });
 
   $('#bootstrap-link').href = BOOTSTRAP_ZIP;
   $('#copy-prompt').addEventListener('click', copyInstallPrompt);
 
   globalThis.addEventListener('popstate', () => bootFromLocation());
+  globalThis.addEventListener('resize', () => {
+    if (!state.drawerOpen) $('#drawer-backdrop').hidden = true;
+  });
+  try {
+    globalThis.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
+      applyTheme();
+      renderAll();
+    });
+  } catch {
+    /* older browsers: the theme simply does not follow the system live */
+  }
 
   document.addEventListener('keydown', (event) => {
     if (screens.graph.hidden) return;
     if (event.key === 'Escape') {
-      state.selection = null;
-      state.view?.setSelection(null);
-      renderInspectorPanel();
+      if (!$('#search-results').hidden) {
+        $('#search-results').hidden = true;
+        return;
+      }
+      if (state.drawerOpen) {
+        closeDrawer();
+        return;
+      }
+      if (state.inspectorOpen) {
+        closeInspector();
+        return;
+      }
+      clearSelection();
     }
     if (event.key === '/' && document.activeElement !== $('#search-input')) {
       event.preventDefault();
@@ -542,5 +1085,6 @@ async function copyInstallPrompt() {
     : 'The prompt could not be fetched and the clipboard is unavailable — copy the built-in prompt below.';
 }
 
+applyTheme();
 wire();
 bootFromLocation();

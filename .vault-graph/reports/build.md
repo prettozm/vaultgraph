@@ -3,7 +3,7 @@
 | Champ | Valeur |
 |---|---|
 | Mode | INIT (premier run, `state.json` vide) |
-| Horodatage (`generated_at`) | 2026-09-03T19:49:52Z (révision 3 : republication sur prettozm/vaultgraph ; révision 2 2026-09-02T22:09:24Z ; run moteur initial 2026-09-02T21:37:03Z) |
+| Horodatage (`generated_at`) | 2026-09-03T21:00:23Z (révision 4 : métadonnées temporelles ; révisions précédentes : 3 republication, 2 post-contrarian, run moteur initial 2026-09-02T21:37:03Z) |
 | Commit source | `6abf2e52444f65d7b9bc8df0fe21c08a2519659f` (branche `main`) |
 | Générateur | agent `claude` |
 | Corpus scanné | `fixtures/demo-vault/**/*.md` — 13 fichiers |
@@ -96,3 +96,12 @@ Règle explicitée à cette occasion : `edge:0047` (`precede` entre ADR-001 et A
 L3-5), donc observable, non inférée. Contrat de format précisé dans INSTRUCTIONS.md §11 : `by_status`
 compte nœuds **et** arêtes. `manifest.source.commit` reste `6abf2e5…` : c'est le commit du **vault
 source**, inchangé depuis (`git diff 6abf2e5 HEAD -- fixtures/` vide).
+
+## Révision 4 — métadonnées temporelles (2026-09-03T21:00:23Z)
+
+Le protocole 0.1 admet désormais un champ optionnel `date` sur les nœuds (INSTRUCTIONS.md §3), utilisé par
+la projection temporelle du viewer v0.2. Trois nœuds sont datés, chacun d'après une mention explicite de sa
+source : `decision:adr-001-batterie-lifepo4` → 2026-05-14 (« Accepté (2026-05-14) », ADR-001 L5) ;
+`decision:adr-002-prix-de-lancement` → 2026-06-02 (ADR-002 L5) ; `decision:revision-batterie-li-ion-nmc`
+→ 2026-08 (précision mois : « août 2026 », titre de la note, L1). Aucun autre nœud n'est daté : le viewer les
+place dans la couche « non datés ». Aucune date n'a été déduite d'un nom de fichier ou d'un commit.

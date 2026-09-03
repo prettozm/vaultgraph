@@ -6,7 +6,7 @@
   "edges": "graph/edges.jsonl",
   "config": "config.yaml",
   "schema": "schema.yaml",
-  "generated_at": "2026-09-03T19:49:52Z",
+  "generated_at": "2026-09-03T21:00:23Z",
   "source": {
     "type": "git",
     "commit": "6abf2e52444f65d7b9bc8df0fe21c08a2519659f",

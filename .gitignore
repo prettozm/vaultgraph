@@ -2,3 +2,4 @@ node_modules/
 viewer/dist/
 viewer/test/smoke.png
 *.log
+viewer/test/smoke-*.png
