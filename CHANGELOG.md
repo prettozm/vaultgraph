@@ -29,6 +29,8 @@ Graphs without it keep working; the Time projection then falls back to relation 
   labels (never all at once beyond ~40 nodes). Legend explains shapes and statuses, not colour alone.
 - Dark mode (`prefers-color-scheme` + toggle), local prefs (view, projection, theme, last repo),
   shareable URLs `?repo=owner/repo&view=3d&projection=context`.
+- Private repositories: an optional fine-grained token (Contents: read) on the home screen routes
+  reads through the authenticated GitHub Contents API; without a token behaviour is unchanged.
 - Error taxonomy: repository not found, private/inaccessible, invalid manifest, unsupported version,
   missing graph file, invalid JSON, network — no stack traces.
 
@@ -38,7 +40,7 @@ Graphs without it keep working; the Time projection then falls back to relation 
 - The demo graph dates its three decisions from explicit statements in the sources (build.md revision 4).
 
 ### Known limitations
-- Public GitHub repositories only (unauthenticated raw fetch).
+- Private repositories require a token pasted by the viewer's user (kept in that browser only).
 - 3D layout is a projection of the 2D layout, not a 3D force simulation: layers are readable, but
   nodes of one layer keep their 2D arrangement.
 - Touch gestures were validated with pointer events in headless Chromium, not on a physical device.

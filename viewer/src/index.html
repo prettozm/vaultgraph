@@ -30,12 +30,31 @@
             placeholder="owner/repository"
             aria-describedby="home-hint"
           />
+          <label class="input-label" for="token-input">
+            GitHub token <span class="muted small">(optional — required for private repositories)</span>
+          </label>
+          <input
+            id="token-input"
+            name="token"
+            type="password"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="github_pat_… (fine-grained, Contents: read)"
+            aria-describedby="token-hint"
+          />
           <button id="load-button" type="submit" class="primary">Load graph</button>
         </form>
         <p id="home-error" class="form-error" role="alert" hidden></p>
         <p id="home-hint" class="hint">
-          Public repositories only in v0. <code>owner/repo</code> and full GitHub URLs both work; you
-          can also paste a direct <code>manifest.json</code> URL (handy for local or offline use).
+          <code>owner/repo</code> and full GitHub URLs both work; public repositories need no token.
+          For a <strong>private</strong> repository, paste a fine-grained token (Contents: read on that
+          repo): it is stored only in this browser and used to read the graph through the authenticated
+          GitHub API — point at the branch that carries <code>.vault-graph/</code>
+          (<code>…/tree/&lt;branch&gt;</code>). You can also paste a direct <code>manifest.json</code>
+          URL (handy for local or offline use).
+        </p>
+        <p id="token-hint" class="hint muted small">
+          Create one at GitHub → Settings → Developer settings → Fine-grained tokens.
         </p>
       </div>
     </section>

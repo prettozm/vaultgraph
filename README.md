@@ -58,7 +58,7 @@ Published at **https://prettozm.github.io/vaultgraph/**. Paste a public GitHub r
 - Shareable URLs: `?repo=owner/repo&view=3d&projection=context`. Preferences (view, projection, theme, last repo) are kept in the browser only.
 - Dark mode follows the system and can be toggled.
 
-v0 limits: public repositories only; 3D positions are a projection of the 2D layout, not a 3D simulation. Details in `viewer/README.md` and `CHANGELOG.md`.
+v0 limits: private repositories need a fine-grained GitHub token (Contents: read) pasted on the home screen — stored in the browser only, sent to api.github.com only; 3D positions are a projection of the 2D layout, not a 3D simulation. Details in `viewer/README.md` and `CHANGELOG.md`.
 
 ## What is in `.vault-graph/`
 
