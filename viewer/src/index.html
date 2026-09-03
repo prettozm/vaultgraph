@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vault Graph</title>
+    <meta
+      name="description"
+      content="Universal viewer for the .vault-graph protocol: read a graph a repository already exposes."
+    />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='9' cy='10' r='4' fill='%232f6f9f'/%3E%3Ccircle cx='23' cy='8' r='3' fill='%23c98a00'/%3E%3Ccircle cx='18' cy='23' r='4.5' fill='%234a9a6a'/%3E%3Cg stroke='%2355606f' stroke-width='1.6'%3E%3Cline x1='9' y1='10' x2='23' y2='8'/%3E%3Cline x1='9' y1='10' x2='18' y2='23'/%3E%3Cline x1='23' y1='8' x2='18' y2='23'/%3E%3C/g%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <!-- ============================ HOME (CDC §18) ============================ -->
+    <section id="screen-home" class="screen screen-centered">
+      <div class="home-card">
+        <h1 class="wordmark">VAULT GRAPH</h1>
+        <p class="tagline">
+          Read the graph a repository already exposes in its <code>.vault-graph/</code> folder.
+        </p>
+        <form id="home-form" autocomplete="off">
+          <label class="input-label" for="repo-input">GitHub repository</label>
+          <input
+            id="repo-input"
+            name="repo"
+            type="text"
+            spellcheck="false"
+            placeholder="https://github.com/owner/repository"
+            aria-describedby="home-hint"
+          />
+          <button id="load-button" type="submit" class="primary">Load graph</button>
+        </form>
+        <p id="home-error" class="form-error" role="alert" hidden></p>
+        <p id="home-hint" class="hint">
+          Public repositories only in v0. You can also paste a direct
+          <code>manifest.json</code> URL (handy for local or offline use).
+        </p>
+      </div>
+    </section>
+
+    <!-- ============================ LOADING ============================ -->
+    <section id="screen-loading" class="screen screen-centered" hidden>
+      <div class="status-card">
+        <div class="spinner" aria-hidden="true"></div>
+        <p id="loading-message">Loading…</p>
+        <p id="loading-detail" class="mono muted small wrap"></p>
+      </div>
+    </section>
+
+    <!-- ==================== INCOMPATIBLE REPO (CDC §20) ==================== -->
+    <section id="screen-incompatible" class="screen screen-centered" hidden>
+      <div class="status-card wide">
+        <h1 class="headline">This repository does not expose a Vault Graph.</h1>
+        <p id="incompatible-target" class="mono muted small wrap"></p>
+        <p class="hint">Two ways to install it — pick either.</p>
+        <div class="actions">
+          <a
+            id="bootstrap-link"
+            class="primary"
+            href="https://github.com/prettozm/vaultgraph/releases/latest/download/vault-graph-bootstrap.zip"
+            >Download bootstrap ZIP</a
+          >
+          <button id="copy-prompt" type="button" class="secondary">Copy Claude install prompt</button>
+        </div>
+        <p id="copy-status" class="hint" role="status"></p>
+        <div id="prompt-fallback" hidden>
+          <p class="hint">Clipboard unavailable — select and copy the prompt below.</p>
+          <textarea id="prompt-text" rows="12" readonly spellcheck="false"></textarea>
+          <p class="hint">
+            Source:
+            <a
+              id="prompt-source-link"
+              href="https://github.com/prettozm/vaultgraph/blob/HEAD/dist/CLAUDE_INSTALL_PROMPT.md"
+              target="_blank"
+              rel="noreferrer noopener"
+              >dist/CLAUDE_INSTALL_PROMPT.md</a
+            >
+          </p>
+        </div>
+        <div class="actions secondary-actions">
+          <button type="button" class="ghost" data-action="retry">Retry</button>
+          <button type="button" class="ghost" data-action="home">Try another repository</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ ERROR ============================ -->
+    <section id="screen-error" class="screen screen-centered" hidden>
+      <div class="status-card wide">
+        <h1 class="headline">The graph could not be loaded.</h1>
+        <p id="error-message" class="error-message"></p>
+        <p id="error-detail" class="mono muted small wrap"></p>
+        <div class="actions">
+          <button type="button" class="primary" data-action="retry">Retry</button>
+          <button type="button" class="ghost" data-action="home">Try another repository</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== MAIN VIEW (CDC §21 – §26) ==================== -->
+    <section id="screen-graph" class="screen screen-app" hidden>
+      <header class="topbar">
+        <button type="button" class="wordmark-small" data-action="home" title="Load another repository">
+          VAULT&nbsp;GRAPH
+        </button>
+        <span id="topbar-repo" class="topbar-repo mono"></span>
+        <div class="topbar-actions">
+          <button id="refresh-button" type="button" class="secondary" title="Re-fetch .vault-graph (does not rebuild)">
+            Refresh
+          </button>
+        </div>
+      </header>
+
+      <div class="layout">
+        <aside class="panel panel-left" aria-label="Graph metadata and filters">
+          <div id="meta" class="meta"></div>
+          <div id="warnings"></div>
+          <h2 class="panel-title">Filters</h2>
+          <div id="filters" class="filters"></div>
+        </aside>
+
+        <main class="stage">
+          <div class="stage-toolbar">
+            <input
+              id="search-input"
+              type="search"
+              placeholder="Search by label or alias…"
+              aria-label="Search nodes by label"
+            />
+            <span id="search-count" class="muted small"></span>
+            <span class="spacer"></span>
+            <button id="zoom-out" type="button" class="ghost" title="Zoom out">−</button>
+            <button id="zoom-in" type="button" class="ghost" title="Zoom in">+</button>
+            <button id="recenter-button" type="button" class="ghost">Recenter</button>
+          </div>
+          <div class="canvas-wrap">
+            <canvas id="graph-canvas"></canvas>
+            <div id="visible-count" class="canvas-badge"></div>
+          </div>
+          <div id="legend" class="legend-bar"></div>
+        </main>
+
+        <aside class="panel panel-right" aria-label="Inspector">
+          <h2 class="panel-title">Inspector</h2>
+          <div id="inspector" class="inspector"></div>
+        </aside>
+      </div>
+    </section>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

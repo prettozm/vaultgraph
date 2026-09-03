@@ -1,0 +1,40 @@
+{
+  "format": "vault-graph",
+  "version": "0.1",
+  "generated_at": "2026-09-02T22:00:00Z",
+  "source_commit": "abc1234def5678901234567890abcdef12345678",
+  "counts": {
+    "nodes": 9,
+    "edges": 7
+  },
+  "by_type": {
+    "concept": 3,
+    "source": 1,
+    "fonctionnalite": 1,
+    "besoin": 1,
+    "hypothese": 1,
+    "decision": 1,
+    "contexte": 1
+  },
+  "by_relation": {
+    "aborde": 2,
+    "exprime": 1,
+    "fonde": 1,
+    "derive_de": 1,
+    "related_to": 1,
+    "contredit": 1
+  },
+  "by_context": {
+    "core": 5,
+    "viewer": 1,
+    "electronique": 1,
+    "finance": 1,
+    "architecture": 1
+  },
+  "by_status": {
+    "explicit": 4,
+    "confirmed": 2,
+    "candidate": 2,
+    "unresolved": 1
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "vault-graph-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Universal static viewer for the .vault-graph protocol. Zero runtime dependencies.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

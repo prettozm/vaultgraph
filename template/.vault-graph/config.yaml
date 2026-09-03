@@ -1,0 +1,21 @@
+scan:
+  include:
+    - "**/*.md"
+    - "**/*.yaml"
+    - "**/*.json"
+    - "**/*.jsonl"
+
+  exclude:
+    - ".git/**"
+    - ".vault-graph/**"
+    - "node_modules/**"
+    - "generated/**"
+
+reconciliation:
+  context_first: true
+  allow_orphans: true
+  uncertain_match:
+    action: candidate
+
+write_scope:
+  - ".vault-graph/**"

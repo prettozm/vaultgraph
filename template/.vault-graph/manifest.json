@@ -1,0 +1,18 @@
+{
+  "format": "vault-graph",
+  "version": "0.1",
+  "graph": "graph/graph.json",
+  "nodes": "graph/nodes.jsonl",
+  "edges": "graph/edges.jsonl",
+  "config": "config.yaml",
+  "schema": "schema.yaml",
+  "generated_at": null,
+  "source": {
+    "type": "git",
+    "commit": null
+  },
+  "generator": {
+    "type": "agent",
+    "name": "unset"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "vaultgraph",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "validate:template": "node scripts/validate-template.mjs",
+    "validate:vault": "node scripts/validate-vault.mjs .vault-graph",
+    "check:install-prompt": "node scripts/check-install-prompt.mjs",
+    "rebuild:summary": "node scripts/rebuild-graph-summary.mjs .vault-graph",
+    "build:bootstrap": "node scripts/build-bootstrap.mjs",
+    "build:viewer": "npm --prefix viewer run build",
+    "verify": "node scripts/verify.mjs",
+    "test": "npm run verify"
+  },
+  "devDependencies": {
+    "yaml": "^2.9"
+  }
+}

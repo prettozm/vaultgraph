@@ -1,0 +1,7 @@
+{"id":"edge:1","from":"source:docs-memory","to":"concept:memory-activable","relation":"aborde","status":"explicit","sources":[{"file":"docs/memory.md","line_start":14,"line_end":22}]}
+{"id":"edge:2","from":"source:docs-memory","to":"besoin:tracabilite","relation":"aborde","status":"explicit","sources":[{"file":"docs/memory.md","line_start":24,"line_end":30}]}
+{"id":"edge:3","from":"fonctionnalite:projection","to":"besoin:tracabilite","relation":"exprime","status":"explicit","sources":[{"file":"docs/strategy.md","line_start":38,"line_end":42}]}
+{"id":"edge:4","from":"besoin:tracabilite","to":"concept:memory-activable","relation":"fonde","status":"explicit","sources":[{"file":"docs/needs.md","line_start":5,"line_end":9}]}
+{"id":"edge:5","from":"concept:memory-activable","to":"contexte:core","relation":"derive_de","status":"confirmed","sources":[{"file":"docs/contexts.md","line_start":1,"line_end":4}]}
+{"id":"edge:6","from":"concept:resistance-electronique","to":"concept:resistance-finance","relation":"related_to","status":"candidate","sources":[]}
+{"id":"edge:7","from":"hypothese:graphe-complet","to":"besoin:tracabilite","relation":"contredit","status":"candidate","sources":[]}

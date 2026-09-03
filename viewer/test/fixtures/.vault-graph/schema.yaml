@@ -1,0 +1,22 @@
+nodes:
+  - source
+  - concept
+  - besoin
+  - fonctionnalite
+  - decision
+  - hypothese
+  - contexte
+
+relations:
+  - aborde
+  - exprime
+  - fonde
+  - derive_de
+  - related_to
+  - contredit
+
+epistemic_states:
+  - explicit
+  - candidate
+  - confirmed
+  - unresolved

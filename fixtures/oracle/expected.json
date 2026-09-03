@@ -1,0 +1,93 @@
+{
+  "_comment": "Oracle de benchmark caché pour fixtures/demo-vault/ (Projet Lumen). Ne pas fournir au moteur avant la première génération du graphe (CDC §35). Voir fixtures/oracle/README.md.",
+
+  "min_nodes": 20,
+  "min_edges": 20,
+
+  "homonyms": [
+    {
+      "label_regex": "r[ée]sistance",
+      "must_be_distinct_nodes": true,
+      "expected_contexts_regex": [
+        "[ée]lectroni",
+        "financ|prix|march[ée]"
+      ],
+      "source_files": [
+        "fixtures/demo-vault/electronique/alimentation-led.md",
+        "fixtures/demo-vault/finance/prix-et-marche.md",
+        "fixtures/demo-vault/glossaire.md"
+      ]
+    }
+  ],
+
+  "types_present": [
+    "concept",
+    "besoin",
+    "decision",
+    "hypothese",
+    "cas_usage",
+    "fonctionnalite"
+  ],
+
+  "expected_orphans": [
+    {
+      "source_file": "fixtures/demo-vault/notes/idee-isolee.md",
+      "must_have_reason": true,
+      "allowed_status": ["unresolved", "candidate", "explicit"]
+    }
+  ],
+
+  "expected_conflicts": [
+    {
+      "between_files": [
+        "fixtures/demo-vault/decisions/ADR-001-batterie.md",
+        "fixtures/demo-vault/notes/2026-08-changement-batterie.md"
+      ],
+      "relation_any_of": ["contredit", "supersede"]
+    }
+  ],
+
+  "expected_lineage": [
+    {
+      "relation": "derive_de",
+      "from_label_regex": "veille automatique",
+      "to_label_regex": "autonomie",
+      "source_files": [
+        "fixtures/demo-vault/cas-usage/scenarios.md",
+        "fixtures/demo-vault/besoins/utilisateurs.md"
+      ]
+    },
+    {
+      "relation": "raffine",
+      "from_source_file": "fixtures/demo-vault/electronique/thermique.md",
+      "to_source_file": "fixtures/demo-vault/electronique/alimentation-led.md"
+    }
+  ],
+
+  "hypotheses": [
+    {
+      "source_file": "fixtures/demo-vault/hypotheses/hypotheses-ouvertes.md",
+      "must_have_type": "hypothese",
+      "must_not_have_status": ["confirmed"],
+      "min_count": 3
+    }
+  ],
+
+  "provenance": {
+    "every_explicit_node_has_sources": true,
+    "sources_must_reference_existing_files": true
+  },
+
+  "expected_labels_regex": [
+    "LiFePO4|lifepo4",
+    "Li-?ion NMC|nmc",
+    "prix de lancement|prix",
+    "autonomie",
+    "veille automatique",
+    "r[ée]sistance"
+  ],
+
+  "excluded_from_scan": [
+    "fixtures/oracle/**"
+  ]
+}

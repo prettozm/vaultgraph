@@ -1,0 +1,14 @@
+{
+  "format": "vault-graph",
+  "version": "0.1",
+  "generated_at": null,
+  "source_commit": null,
+  "counts": {
+    "nodes": 0,
+    "edges": 0
+  },
+  "by_type": {},
+  "by_relation": {},
+  "by_context": {},
+  "by_status": {}
+}

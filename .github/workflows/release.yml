@@ -1,0 +1,40 @@
+name: Release bootstrap ZIP
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Check bootstrap ZIP is up to date
+        run: node scripts/build-bootstrap.mjs --check
+
+      - name: Create/update release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/vault-graph-bootstrap.zip
+            dist/CLAUDE_INSTALL_PROMPT.md
+          generate_release_notes: true

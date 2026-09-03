@@ -1,0 +1,10 @@
+{"id":"source:docs-memory","type":"source","label":"docs/memory.md","context":"core","status":"confirmed","sources":[{"file":"docs/memory.md","heading":"Mémoire activable","line_start":1,"line_end":3}]}
+{"id":"concept:memory-activable","type":"concept","label":"mémoire activable","context":"core","status":"explicit","aliases":["memoire activable","activable memory"],"sources":[{"file":"docs/memory.md","heading":"Mémoire activable","line_start":14,"line_end":22}]}
+
+{"id":"besoin:tracabilite","type":"besoin","label":"traçabilité des connaissances","context":"core","status":"explicit","sources":[{"file":"docs/needs.md","heading":"Traçabilité","line_start":5,"line_end":9}]}
+{"id":"fonctionnalite:projection","type":"fonctionnalite","label":"projection de graphe","context":"viewer","status":"explicit","sources":[{"file":"docs/strategy.md","line_start":38,"line_end":42}]}
+{"id":"contexte:core","type":"contexte","label":"core","context":"core","status":"confirmed","sources":[{"file":"docs/contexts.md","line_start":1,"line_end":4}]}
+{"id":"concept:resistance-electronique","type":"concept","label":"résistance","context":"electronique","status":"explicit","aliases":["resistance"],"sources":[{"file":"docs/electronics.md","heading":"Résistance","line_start":10,"line_end":14}]}
+{"id":"concept:resistance-finance","type":"concept","label":"résistance","context":"finance","status":"candidate","aliases":["resistance"],"sources":[{"file":"docs/finance.md","heading":"Résistance","line_start":20,"line_end":24}]}
+{"id":"hypothese:graphe-complet","type":"hypothese","label":"le graphe doit être totalement connecté","context":"core","status":"candidate","sources":[]}
+{"id":"decision:pas-de-backend","type":"decision","label":"aucun backend obligatoire","context":"architecture","status":"unresolved","reason":"no justified relation found","sources":[{"file":"docs/decisions.md","heading":"Pas de backend","line_start":3,"line_end":7}]}

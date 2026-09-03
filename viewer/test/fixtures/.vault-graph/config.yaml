@@ -1,0 +1,15 @@
+scan:
+  include:
+    - "**/*.md"
+  exclude:
+    - ".git/**"
+    - ".vault-graph/**"
+
+reconciliation:
+  context_first: true
+  allow_orphans: true
+  uncertain_match:
+    action: candidate
+
+write_scope:
+  - ".vault-graph/**"
