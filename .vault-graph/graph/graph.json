@@ -1,0 +1,45 @@
+{
+  "format": "vault-graph",
+  "version": "0.1",
+  "generated_at": "2026-09-03T19:49:52Z",
+  "source_commit": "6abf2e52444f65d7b9bc8df0fe21c08a2519659f",
+  "counts": {
+    "nodes": 39,
+    "edges": 64
+  },
+  "by_type": {
+    "besoin": 4,
+    "cas_usage": 4,
+    "concept": 17,
+    "contexte": 2,
+    "decision": 3,
+    "fonctionnalite": 3,
+    "hypothese": 3,
+    "source": 3
+  },
+  "by_relation": {
+    "aborde": 17,
+    "contredit": 2,
+    "derive_de": 6,
+    "exprime": 2,
+    "fonde": 11,
+    "legitime": 1,
+    "precede": 2,
+    "raffine": 1,
+    "related_to": 21,
+    "supersede": 1
+  },
+  "by_context": {
+    "decision": 3,
+    "electronique": 12,
+    "finance": 5,
+    "hors-sujet": 1,
+    "hypotheses": 4,
+    "produit": 10,
+    "projet": 4
+  },
+  "by_status": {
+    "candidate": 5,
+    "explicit": 98
+  }
+}

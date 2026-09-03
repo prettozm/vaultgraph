@@ -1,0 +1,25 @@
+scan:
+  include:
+    - "fixtures/demo-vault/**/*.md"
+
+  exclude:
+    - ".git/**"
+    - ".vault-graph/**"
+    - ".track/**"
+    - "template/**"
+    - "viewer/**"
+    - "scripts/**"
+    - "dist/**"
+    - "node_modules/**"
+    - "fixtures/oracle/**"
+    - "fixtures/README.md"
+    - "docs/**"
+
+reconciliation:
+  context_first: true
+  allow_orphans: true
+  uncertain_match:
+    action: candidate
+
+write_scope:
+  - ".vault-graph/**"

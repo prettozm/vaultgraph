@@ -1,0 +1,19 @@
+{
+  "format": "vault-graph",
+  "version": "0.1",
+  "graph": "graph/graph.json",
+  "nodes": "graph/nodes.jsonl",
+  "edges": "graph/edges.jsonl",
+  "config": "config.yaml",
+  "schema": "schema.yaml",
+  "generated_at": "2026-09-03T19:49:52Z",
+  "source": {
+    "type": "git",
+    "commit": "6abf2e52444f65d7b9bc8df0fe21c08a2519659f",
+    "branch": "main"
+  },
+  "generator": {
+    "type": "agent",
+    "name": "claude"
+  }
+}
