@@ -25,7 +25,7 @@ export const Z_SPREAD = 520;
 
 const NODE_PICK_PX = 12;
 const EDGE_PICK_PX = 8;
-const MAX_PLANES = 12;
+const MAX_PLANES = 24;
 const DOUBLE_TAP_MS = 320;
 
 // colors.js owns the shared vocabularies when it exposes them (Lot H added
@@ -229,11 +229,15 @@ export function createGraphView3D(canvas, handlers = {}) {
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
       const text = `${layer.label} (${layer.count})`;
+      // keep the label inside the canvas even when the plane's corner is off-screen
+      const tw = ctx.measureText(text).width;
+      const lx = Math.min(Math.max(anchor.sx - 6, tw + 8), viewport.width - 8);
+      const ly = Math.min(Math.max(anchor.sy, 10), viewport.height - 10);
       ctx.lineWidth = 3;
       ctx.strokeStyle = 'rgba(252,252,250,0.85)';
-      ctx.strokeText(text, anchor.sx - 6, anchor.sy);
+      ctx.strokeText(text, lx, ly);
       ctx.fillStyle = 'rgba(70,79,94,0.95)';
-      ctx.fillText(text, anchor.sx - 6, anchor.sy);
+      ctx.fillText(text, lx, ly);
     }
     ctx.restore();
   }

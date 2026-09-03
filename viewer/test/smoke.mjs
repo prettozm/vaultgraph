@@ -104,6 +104,7 @@ async function open(viewport) {
       await page.waitForTimeout(250);
       check(await page.locator('#graph-canvas-3d').isVisible(), `desktop: projection switched to ${enabled[1]}`);
       await page.waitForTimeout(700); await page.screenshot({ path: new URL('./smoke-3d-time.png', import.meta.url).pathname });
+      for (const id of enabled.slice(2)) { await page.selectOption('#projection-select', id); await page.waitForTimeout(700); check(await page.locator('#graph-canvas-3d').isVisible(), `desktop: projection switched to ${id}`); await page.screenshot({ path: new URL(`./smoke-3d-${id}.png`, import.meta.url).pathname }); }
     }
     await page.click('#view-2d');
     await page.waitForTimeout(200);
