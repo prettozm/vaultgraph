@@ -17,7 +17,30 @@ import {
 } from './lib/graph-model.js';
 import { createSimulation } from './lib/layout.js';
 import { blobUrl } from './lib/github.js';
+import { makeAuthFetch } from './lib/auth-fetch.js';
 import { formatCount } from './lib/format.js';
+
+// Fine-grained token for private repositories. Stored only in this browser;
+// used to read the graph through the authenticated GitHub API (see auth-fetch.js).
+const TOKEN_KEY = 'vault-graph.token';
+function getToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+function setToken(value) {
+  try {
+    if (value) localStorage.setItem(TOKEN_KEY, value);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* private mode / storage blocked — token just won't persist */
+  }
+}
+function currentFetch() {
+  return makeAuthFetch(getToken());
+}
 
 const BOOTSTRAP_ZIP =
   'https://github.com/prettozm/vaultgraph/releases/latest/download/vault-graph-bootstrap.zip';
@@ -131,9 +154,10 @@ async function load(target, { refresh = false } = {}) {
     target.kind === 'repo' ? `${target.owner}/${target.repo}` : target.value
   );
 
+  const fetchImpl = currentFetch();
   let resolved;
   try {
-    resolved = await resolveTarget(target);
+    resolved = await resolveTarget(target, { fetchImpl });
   } catch (err) {
     if (token === state.loadToken) showError(err);
     return;
@@ -146,7 +170,7 @@ async function load(target, { refresh = false } = {}) {
 
   let payload;
   try {
-    payload = await loadVaultGraph(resolved.manifestUrl, { cacheBust: refresh ? Date.now() : null });
+    payload = await loadVaultGraph(resolved.manifestUrl, { fetchImpl, cacheBust: refresh ? Date.now() : null });
   } catch (err) {
     if (token !== state.loadToken) return;
     // A missing manifest means "this repository has no Vault Graph" (§20);
@@ -442,8 +466,12 @@ function bootFromLocation({ push = false } = {}) {
 }
 
 function wire() {
+  const tokenInput = $('#token-input');
+  if (tokenInput) tokenInput.value = getToken();
+
   $('#home-form').addEventListener('submit', (event) => {
     event.preventDefault();
+    if (tokenInput) setToken(tokenInput.value.trim());
     const value = $('#repo-input').value;
     const classified = classifyInput(value, location.href);
     const errorNode = $('#home-error');
