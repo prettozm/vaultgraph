@@ -72,10 +72,10 @@ test('context: a single layer sits at z = 0', () => {
 
 // --- time ----------------------------------------------------------------
 
-test('nodeDate reads date, created_at, valid_from and never guesses', () => {
+test('nodeDate reads only the documented `date` field and never guesses', () => {
   assert.equal(nodeDate(node('a', { date: '2024-05-02' })).getUTCFullYear(), 2024);
-  assert.equal(nodeDate(node('a', { created_at: '2023-01-01T10:00:00Z' })).getUTCFullYear(), 2023);
-  assert.equal(nodeDate(node('a', { valid_from: '2022' })).getUTCFullYear(), 2022);
+  assert.equal(nodeDate(node('a', { created_at: '2023-01-01T10:00:00Z' })), null);
+  assert.equal(nodeDate(node('a', { valid_from: '2022' })), null);
   assert.equal(nodeDate(node('a')), null);
   assert.equal(nodeDate(node('a', { date: 'sometime last spring' })), null);
 });
@@ -219,4 +219,32 @@ test('listProjections reports availability for the whole family', () => {
 
   const empty = listProjections(graphOf([]));
   assert.ok(empty.every((p) => p.available === false && typeof p.reason === 'string'));
+});
+
+
+test('S1: a year-only date is never placed on a month shelf (precision is capped, not upgraded)', () => {
+  const g = graphOf([
+    { id: 'a', type: 'decision', label: 'A', context: 'c', status: 'explicit', date: '2026', sources: [{ file: 'a.md' }] },
+    { id: 'b', type: 'decision', label: 'B', context: 'c', status: 'explicit', date: '2026-03', sources: [{ file: 'b.md' }] },
+    { id: 'c', type: 'decision', label: 'C', context: 'c', status: 'explicit', date: '2026-07', sources: [{ file: 'c.md' }] },
+  ]);
+  const t = computeProjection(g, 'time');
+  assert.equal(t.available, true);
+  assert.equal(t.granularity, 'year');
+  const keys = t.layers.map((l) => l.key);
+  assert.ok(keys.includes('2026'), `layers: ${keys.join(',')}`);
+  assert.ok(!keys.some((k) => /^2026-\d{2}$/.test(k)), 'no month shelf may exist when a node declared a year only');
+});
+
+test('S4: the aboutness plane matches the type name "concept" exactly, not any prefix', () => {
+  assert.equal(knowledgePlane('concept'), 'aboutness');
+  assert.equal(knowledgePlane('Concepts'), 'aboutness');
+  assert.equal(knowledgePlane('conceptualisation'), 'other');
+  assert.equal(knowledgePlane('concepteur'), 'other');
+});
+
+test('S5: only the documented `date` field is a date', () => {
+  assert.equal(nodeDate({ created_at: '2019-01-01' }), null);
+  assert.equal(nodeDate({ valid_from: '2019-01-01' }), null);
+  assert.ok(nodeDate({ date: '2019-01-01' }) instanceof Date);
 });

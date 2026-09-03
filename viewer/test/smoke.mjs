@@ -94,6 +94,14 @@ async function open(viewport) {
   if (has3D) {
     await page.click('#view-3d');
     await page.waitForTimeout(400);
+    await page.getByRole('button', { name: /Unresolved/ }).click();
+    await page.waitForTimeout(400);
+    const inspUnres = await page.locator('#inspector').innerText().catch(() => '');
+    check(/levain|isol|Recette/i.test(inspUnres), `desktop: Unresolved opens the explained orphan (${inspUnres.replace(/\s+/g, ' ').slice(0, 80)})`);
+    const vcUnres = await page.locator('#visible-count').innerText().catch(() => '');
+    check(/^1 \//.test(vcUnres.trim()), `desktop: Unresolved keeps the explicit orphan visible (${vcUnres.trim()})`);
+    await page.getByRole('button', { name: /Candidates/ }).click();
+    await page.waitForTimeout(300);
     check(await page.locator('#graph-canvas-3d').isVisible(), 'desktop: 3D canvas visible after toggling 3D');
     await page.waitForTimeout(700); await page.screenshot({ path: new URL('./smoke-3d-context.png', import.meta.url).pathname });
     const options = await page.locator('#projection-select option').count();

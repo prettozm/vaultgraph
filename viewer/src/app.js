@@ -85,6 +85,7 @@ const state = {
   focusHops: null,
   emphasisTimer: 0,
   quick: null,
+  quickNodeIds: null, // node whitelist installed by the Unresolved quick action (never a status filter)
   drawerOpen: false,
   inspectorOpen: false,
   prefs: readPrefs(),
@@ -206,9 +207,9 @@ function describeError(err) {
         detail,
       };
     case 'http':
-      return { title: 'The graph could not be loaded.', message: err.message, hint: '', detail };
+      return { title: 'The graph could not be loaded.', message: 'The server did not return the graph files.', hint: 'Check that the repository is public and that .vault-graph/ is on its default branch.', detail: detail || err.message };
     default:
-      return { title: 'The graph could not be loaded.', message: err.message, hint: '', detail };
+      return { title: 'The graph could not be loaded.', message: 'An unexpected error occurred while loading the graph.', hint: 'Try Refresh; if it persists, the graph files may be malformed.', detail: detail || err.message };
   }
 }
 
@@ -541,8 +542,20 @@ function renderAll() {
   renderWarnings($('#warnings'), [...(state.payload?.warnings ?? []), ...state.graph.issues]);
 }
 
-function applyAndRender({ recenter = false } = {}) {
+/** Facet filters, then the optional quick-action node whitelist (S2: explained orphans with a
+ *  non-tentative status must stay visible when the Unresolved action is active). */
+function computeVisibility() {
   const { visibleNodeIds, visibleEdgeIds } = applyFilters(state.graph, state.filters);
+  if (!state.quickNodeIds) return { visibleNodeIds, visibleEdgeIds };
+  const nodes = new Set([...visibleNodeIds].filter((id) => state.quickNodeIds.has(id)));
+  const edges = new Set(
+    (state.graph.edges ?? []).filter((e) => visibleEdgeIds.has(e.id) && nodes.has(e.from) && nodes.has(e.to)).map((e) => e.id)
+  );
+  return { visibleNodeIds: nodes, visibleEdgeIds: edges };
+}
+
+function applyAndRender({ recenter = false } = {}) {
+  const { visibleNodeIds, visibleEdgeIds } = computeVisibility();
   for (const view of [state.view, state.view3d]) {
     if (!view) continue;
     view.setVisible(visibleNodeIds, visibleEdgeIds);
@@ -564,6 +577,7 @@ function applyAndRender({ recenter = false } = {}) {
 // --------------------------------------------------------------------------
 
 function setEmphasis(idSet) {
+  state.emphasis = idSet ?? null;
   for (const view of [state.view, state.view3d]) view?.setEmphasis?.(idSet);
 }
 
@@ -629,7 +643,7 @@ function flashNeighbourhood(id) {
 
 function runQuickAction(action) {
   if (state.quick === action.kind) {
-    state.quick = null;
+    state.quick = null; state.quickNodeIds = null;
     state.filters.edgeStatus.clear();
     state.filters.status.clear();
     setEmphasis(null);
@@ -652,8 +666,9 @@ function runQuickAction(action) {
     const nodes = (state.graph.nodes ?? []).filter(
       (n) => isTentative(n.status) || (state.graph.degree.get(n.id) ?? 0) === 0
     );
-    const statuses = new Set(nodes.filter((n) => isTentative(n.status)).map((n) => n.status));
-    state.filters.status = statuses;
+    // Whitelist the tentative AND the degree-0 (explained orphan) nodes — a status filter would
+    // hide explicit orphans, the very items this action exists to surface (CDC §14, brief §28).
+    state.quickNodeIds = new Set(nodes.map((n) => n.id));
     setEmphasis(new Set(nodes.map((n) => n.id)));
     applyAndRender();
     if (nodes.length) selectNode(nodes[0].id, { focus: true });
@@ -782,6 +797,7 @@ async function setMode(mode, { persist = true } = {}) {
     state.view3d.setVisible(...currentVisibility());
     state.view3d.setSelection(state.selection);
     state.view3d.setMatches(state.matches);
+    state.view3d.setEmphasis?.(state.emphasis ?? null);
     state.view3d.setProjection?.(state.projection);
     state.view3d.resize?.();
     state.view3d.start?.();
@@ -804,7 +820,7 @@ function applyModeButtons(mode) {
 }
 
 function currentVisibility() {
-  const { visibleNodeIds, visibleEdgeIds } = applyFilters(state.graph, state.filters);
+  const { visibleNodeIds, visibleEdgeIds } = computeVisibility();
   return [visibleNodeIds, visibleEdgeIds];
 }
 
@@ -957,7 +973,7 @@ function wire() {
   $('#drawer-backdrop').addEventListener('click', closeDrawer);
   $('#filters-reset').addEventListener('click', () => {
     for (const set of Object.values(state.filters)) set.clear();
-    state.quick = null;
+    state.quick = null; state.quickNodeIds = null;
     setEmphasis(null);
     applyAndRender();
   });
@@ -969,7 +985,7 @@ function wire() {
   $('#fit-button').addEventListener('click', () => activeView()?.fitAll?.());
   $('#reset-view-button').addEventListener('click', () => {
     state.focusHops = null;
-    state.quick = null;
+    state.quick = null; state.quickNodeIds = null;
     setEmphasis(null);
     activeView()?.resetView?.();
     updateFocusButtons();

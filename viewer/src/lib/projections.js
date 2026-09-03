@@ -89,11 +89,18 @@ function parseIsoish(value) {
  * @returns {Date|null}
  */
 export function nodeDate(node) {
-  for (const name of ['date', 'created_at', 'valid_from']) {
-    const parsed = parseIsoish(field(node, name));
-    if (parsed) return parsed;
-  }
-  return null;
+  // Only the protocol's documented field (INSTRUCTIONS.md §3). Nothing else is a date.
+  return parseIsoish(field(node, 'date'));
+}
+
+/** Precision the source declared: 'year' | 'month' | 'day' | null. Never upgraded. */
+export function datePrecision(node) {
+  const value = field(node, 'date');
+  if (typeof value !== 'string') return null;
+  const s = value.trim();
+  if (/^\d{4}$/.test(s)) return parseIsoish(s) ? 'year' : null;
+  if (/^\d{4}-\d{2}$/.test(s)) return parseIsoish(s) ? 'month' : null;
+  return parseIsoish(s) ? 'day' : null;
 }
 
 // --- temporal ranks ------------------------------------------------------
@@ -288,11 +295,16 @@ function timeProjection(graph) {
   if (dates.size > 0) {
     const years = new Set([...dates.values()].map(yearKey));
     const months = new Set([...dates.values()].map(monthKey));
-    // Pick the granularity that yields a readable 2–8 buckets.
+    // A node that declared only a year must never be shown on a month shelf: the bucket
+    // granularity is capped by the coarsest precision any dated node declared.
+    const coarsest = nodes.some((n) => dates.has(n.id) && datePrecision(n) === 'year') ? 'year' : 'month';
+    // Pick the granularity that yields a readable 2–8 buckets, within that cap.
     let granularity = 'year';
-    if (years.size >= 2 && years.size <= 8) granularity = 'year';
-    else if (months.size >= 2 && months.size <= 8) granularity = 'month';
-    else if (years.size === 1 && months.size >= 2) granularity = 'month';
+    if (coarsest === 'month') {
+      if (years.size >= 2 && years.size <= 8) granularity = 'year';
+      else if (months.size >= 2 && months.size <= 8) granularity = 'month';
+      else if (years.size === 1 && months.size >= 2) granularity = 'month';
+    }
     const keyOf = granularity === 'year' ? yearKey : monthKey;
 
     const assignment = new Map();
@@ -377,8 +389,8 @@ function provenanceProjection(graph) {
 /** Classify a discovered type name into one of the three knowledge planes. */
 export function knowledgePlane(typeName) {
   const raw = String(typeName ?? '');
-  if (/^concept/i.test(raw.trim())) return 'aboutness';
   const norm = normalizeName(raw);
+  if (norm === 'concept' || norm === 'concepts' || norm.startsWith('concept_')) return 'aboutness';
   if (SUBSTANCE_TYPES.has(norm)) return 'substance';
   for (const name of SUBSTANCE_TYPES) {
     if (norm.startsWith(`${name}_`)) return 'substance';
