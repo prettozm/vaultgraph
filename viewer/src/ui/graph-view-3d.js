@@ -630,7 +630,10 @@ export function createGraphView3D(canvas, handlers = {}) {
       .filter((p) => labelled.has(p.body.id) && data.graph.nodeById?.get(p.body.id))
       .filter((p) => !(emphasis && !emphasis.has(p.body.id) && p.body.id !== selectedNodeId))
       // Important first, then nearest/most connected: collisions resolve in favour of meaning.
-      .sort((a, b) => Number(important(b.body.id)) - Number(important(a.body.id)) || (b.body.degree || 0) - (a.body.degree || 0));
+      .sort((a, b) => {
+        const tier = (id) => (id === selectedNodeId ? 0 : hover?.id === id ? 1 : important(id) ? 2 : 3);
+        return tier(a.body.id) - tier(b.body.id) || (b.body.degree || 0) - (a.body.degree || 0);
+      });
     const placer = makeLabelPlacer(3);
     let drawn = 0;
     for (const p of labelDraws) {

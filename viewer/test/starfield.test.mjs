@@ -178,6 +178,7 @@ test('label placer refuses overlapping boxes, accepts disjoint ones, forces impo
   assert.equal(placer.tryPlace(0, 0, 50, 12), true);
   assert.equal(placer.tryPlace(20, 4, 50, 12), false, 'overlaps the first box');
   assert.equal(placer.tryPlace(0, 30, 50, 12), true, 'disjoint');
-  assert.equal(placer.tryPlace(20, 4, 50, 12, true), true, 'forced');
+  assert.equal(placer.tryPlace(20, 4, 50, 12, true), true, 'forced ignores ordinary labels');
+  assert.equal(placer.tryPlace(25, 6, 50, 12, true), false, 'a forced label never overlaps another forced one');
   assert.equal(placer.count, 3);
 });

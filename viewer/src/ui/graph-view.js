@@ -196,9 +196,12 @@ export function createGraphView(canvas, handlers = {}) {
   function pickNode(world) {
     let best = null;
     let bestDist = Infinity;
+    const animate = opts.animation && !paused;
     for (const body of visibleBodies()) {
       const r = radiusOf(body) + 8 / view.scale;
-      const d = Math.hypot(body.x - world.x, body.y - world.y);
+      // Pick against the drifted position actually drawn (drift is applied in screen px).
+      const off = driftOffset(body.id, clock, DRIFT_PX, animate);
+      const d = Math.hypot(body.x + off.dx / view.scale - world.x, body.y + off.dy / view.scale - world.y);
       if (d <= r && d < bestDist) {
         best = body;
         bestDist = d;
@@ -528,7 +531,8 @@ export function createGraphView(canvas, handlers = {}) {
       candidates.push({ body, node, p, important, rank: labelRank.get(body.id) ?? Infinity });
     }
     // Important labels first, then by rank, so collisions are resolved in favour of meaning.
-    candidates.sort((a, b) => Number(b.important) - Number(a.important) || a.rank - b.rank);
+    const tier = (c) => (c.body.id === selectedNodeId ? 0 : hover === c.body.id ? 1 : c.important ? 2 : 3);
+    candidates.sort((a, b) => tier(a) - tier(b) || a.rank - b.rank);
 
     const placer = makeLabelPlacer(3);
     let drawn = 0;

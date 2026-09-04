@@ -195,7 +195,7 @@ export function renderLegend(container, ctx) {
   if (typeFacet.length) {
     groups.push(
       el('div', { class: 'legend-group' }, [
-        el('span', { class: 'legend-title', text: 'Type' }),
+        el('span', { class: 'legend-title', text: statusFirst ? 'Type (shape — colour shows status here)' : 'Type (colour · shape)' }),
         ...typeFacet.slice(0, 12).map((entry) =>
           el('span', { class: 'legend-item' }, [typeSwatch(entry.value), el('span', { text: entry.value })])
         ),
@@ -205,7 +205,7 @@ export function renderLegend(container, ctx) {
 
   if (statusFacet.length) {
     const statusGroup = el('div', { class: 'legend-group' }, [
-      el('span', { class: 'legend-title', text: 'Status' }),
+      el('span', { class: 'legend-title', text: statusFirst ? 'Status (colour)' : 'Status (ring)' }),
       ...statusFacet.slice(0, 8).map((entry) =>
         el('span', { class: 'legend-item' }, [
           el('span', {

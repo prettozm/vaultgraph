@@ -482,11 +482,11 @@ export function makeLabelPlacer(padding = 3) {
   const rects = [];
   return {
     tryPlace(x, y, w, h, force = false) {
-      const r = { x0: x - padding, y0: y - padding, x1: x + w + padding, y1: y + h + padding };
-      if (!force) {
-        for (const o of rects) {
-          if (r.x0 < o.x1 && r.x1 > o.x0 && r.y0 < o.y1 && r.y1 > o.y0) return false;
-        }
+      const r = { x0: x - padding, y0: y - padding, x1: x + w + padding, y1: y + h + padding, forced: force };
+      for (const o of rects) {
+        // A forced label ignores ordinary labels but never overlaps another forced one.
+        if (force && !o.forced) continue;
+        if (r.x0 < o.x1 && r.x1 > o.x0 && r.y0 < o.y1 && r.y1 > o.y0) return false;
       }
       rects.push(r);
       return true;

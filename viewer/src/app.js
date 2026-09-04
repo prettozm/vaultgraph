@@ -1070,7 +1070,7 @@ async function bootFromLocation({ push = false } = {}) {
   // URL wins over the stored preference, for the visual options too (§23).
   const fromUrl = {};
   if (params.labels) fromUrl.labels = params.labels;
-  if (params.layers) fromUrl.layers = params.layers;
+  if (params.layers && (params.view === '3d' || fromUrl.view === '3d')) fromUrl.layers = params.layers; // 3D-only, like the URL writer
   if (Object.keys(fromUrl).length) state.prefs = writePrefs({ visual: fromUrl });
   applyModeButtons(state.mode);
   renderVisualControls();
@@ -1225,6 +1225,10 @@ function wire() {
     }
   });
   try {
+    globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').addEventListener?.('change', () => {
+      // Only when the user has not chosen explicitly: re-resolve the ambient-motion default.
+      if (typeof state.prefs.visual?.animation !== 'boolean') pushVisualOptions();
+    });
     globalThis.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
       applyTheme();
       renderAll();
