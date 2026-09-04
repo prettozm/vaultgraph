@@ -639,7 +639,8 @@ export function createGraphView3D(canvas, handlers = {}) {
       const text = node.label.length > 34 ? `${node.label.slice(0, 33)}…` : node.label;
       const y = p.sy + radiusPx(p) + 3;
       const w = ctx.measureText(text).width;
-      if (!placer.tryPlace(p.sx - w / 2, y, w, 14, important(p.body.id))) continue;
+      const forced = p.body.id === selectedNodeId || hover?.id === p.body.id;
+      if (!placer.tryPlace(p.sx - w / 2, y, w, 14, forced)) continue;
       ctx.lineWidth = 3;
       ctx.strokeStyle = tokens.halo;
       ctx.strokeText(text, p.sx, y);

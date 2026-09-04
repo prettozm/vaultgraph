@@ -538,7 +538,9 @@ export function createGraphView(canvas, handlers = {}) {
       const y = p.y + screenRadius(body) + 4;
       const w = ctx.measureText(text).width;
       // Skip a label that would overlap an already placed one (important labels always win).
-      if (!placer.tryPlace(p.x - w / 2, y, w, 14, important)) continue;
+      // Only the selected / hovered label is forced; matches and focus labels still avoid overlap.
+      const forced = body.id === selectedNodeId || hover === body.id;
+      if (!placer.tryPlace(p.x - w / 2, y, w, 14, forced)) continue;
       ctx.globalAlpha = important ? 1 : lerp(1, 0.45, dimMix * (faded(body.id) ? 1 : 0));
       ctx.lineWidth = 3;
       ctx.strokeStyle = tokens.halo;
