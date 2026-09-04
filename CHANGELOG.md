@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.3.0 — viewer: living-constellation identity (2026-09-04)
+
+Visual redesign of both canvases; the `.vault-graph` protocol is untouched.
+
+### Identity
+- Night theme: deep navy → black gradient ground, soft vignette, a sparse field of dim dust drifting
+  very slowly; day theme keeps the same design on a paper ground. The theme switch stays.
+- Nodes are stars: type hue (unchanged palette, lifted for dark ground) + type shape core (circle,
+  square `source`, diamond `decision`, triangle `hypothese`), four size classes by degree, soft
+  pre-rendered halos, gentle twinkle. Edges are faint luminous lines that brighten only around the
+  selection, hover or focus set. Everything outside the focus is dimmed (eased), never removed.
+- Motion is ambient only and carries no information: drift, twinkle, dust, a very slow idle orbit
+  in 3D that stops on interaction or selection. `prefers-reduced-motion` turns it off by default.
+
+### Encoding (also in the legend's "Reading" group)
+| Channel | Meaning |
+|---|---|
+| Hue | node type (or epistemic status when a 3D projection colours by status) |
+| Shape core | type family |
+| Size · brightness | degree (more relations = bigger, brighter) |
+| Warm ring / halo | selected · hovered · search match |
+| Dashed ring / dashed edge | candidate · unresolved (proposed, not a fact) |
+| Dimmed | outside the current focus |
+| Shelf height (3D) | layer of the current projection |
+| Motion | ambient only |
+
+### Controls
+- `View` popover: Ambient motion, Labels (Auto · Hover · All · Off), Edges, Glow (Off · Low ·
+  Medium · High), Layers (Flat · Layered · Expanded, 3D), Quality (Auto · Low · High), Reset.
+  A `Layers` control also sits in the toolbar in 3D. Preferences are stored in the browser;
+  `&labels=` and `&layers=` are shareable in the URL.
+- Labels are placed without overlap (important ones first: selection, hover, matches, focus).
+
+### Layers
+- Flat / Layered / Expanded change the vertical spread of the projection shelves with a short
+  easing; in Flat the layer names stay listed at the left so the semantics remain readable.
+
+### Performance
+- Quality tiers: Auto picks Low above 450 nodes or under 480 px width; Low disables dust,
+  sprites and twinkle. Halos are cached sprites, edges are batched per style, labels capped at 300,
+  the animation loop runs only while the tab is visible and motion is on.
+
+### Known limitations
+- Motion, easing and idle orbit are validated by tests and code review, not by a human watching
+  the running app; tune `viewer/src/ui/starfield.js` constants if it reads as restless.
+- Not measured on low-end phones; the Quality tiers describe intent, not benchmarks.
+- Label collision avoidance is greedy: at very high density some secondary labels are skipped.
+
 ## 0.2.0 — viewer: semantic 3D projections and mobile-first UI (2026-09-03)
 
 The `.vault-graph` protocol is unchanged except for one **optional, backward-compatible** node field:

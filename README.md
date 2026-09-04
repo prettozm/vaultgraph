@@ -56,7 +56,7 @@ Published at **https://prettozm.github.io/vaultgraph/**. Paste a public GitHub r
 - **Filters** live in a drawer (bottom sheet on phones); the graph keeps ≥ 70 % of the screen.
 - Freshness: `Generated N min ago` (exact UTC on tap) is the date that matters; the fetch time is secondary.
 - Shareable URLs: `?repo=owner/repo&view=3d&projection=context`. Preferences (view, projection, theme, last repo) are kept in the browser only.
-- Dark mode follows the system and can be toggled.
+- Dark mode follows the system and can be toggled. Since v0.3 the night theme is a living constellation (dark ground, star nodes, ambient drift); the `View` button controls motion, labels, edges, glow, layers (Flat · Layered · Expanded) and quality. The legend explains every visual channel; motion never carries information.
 
 v0 limits: private repositories need a fine-grained GitHub token (Contents: read) pasted on the home screen — stored in the browser only, sent to api.github.com only; 3D positions are a projection of the 2D layout, not a 3D simulation. Details in `viewer/README.md` and `CHANGELOG.md`.
 
