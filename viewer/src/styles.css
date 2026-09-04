@@ -259,7 +259,10 @@ textarea { font-family: var(--mono); font-size: 12px; }
   display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
   padding: 7px 14px; border-bottom: 1px solid var(--line); background: var(--chrome); backdrop-filter: var(--chrome-blur);
 }
-.toolbar-view { background: var(--bg); overflow-x: auto; scrollbar-width: thin; }
+/* Each toolbar is its own stacking context (backdrop-filter): the search row must sit above the
+   view row so the results list is never covered. */
+.toolbar { position: relative; z-index: 3; }
+.toolbar-view { background: var(--bg); overflow-x: auto; scrollbar-width: thin; z-index: 2; }
 .toolbar-view::-webkit-scrollbar { height: 4px; }
 .projection select { min-width: 130px; padding: 6px 8px; min-height: 34px; }
 .search-wrap { position: relative; flex: 1 1 140px; min-width: 110px; }
