@@ -71,12 +71,64 @@ function deltaE(a, b) {
   return Math.hypot(l1 - l2, a1 - a2, b1 - b2);
 }
 
-test('starTint leaves the day theme on colorFor and is deterministic', () => {
+test('starTint is deterministic and separates the two themes', () => {
   for (const t of TYPES) {
-    assert.equal(starTint(t), colorFor(t), 'paper keeps its ink, untouched');
-    assert.equal(starTint(t, { dark: true }), starTint(t, { dark: true }), 'stable');
+    assert.equal(starTint(t, { dark: true }), starTint(t, { dark: true }), 'stable (night)');
+    assert.equal(starTint(t), starTint(t), 'stable (day)');
+    assert.notEqual(starTint(t), starTint(t, { dark: true }), 'day is not night');
   }
   assert.notEqual(starTint('concept', { dark: true }), starTint('besoin', { dark: true }));
+  assert.notEqual(starTint('concept'), starTint('besoin'));
+});
+
+// --------------------------------------------------------------------------
+// v0.3.2 — the day theme is the same language with the luminance inverted
+// --------------------------------------------------------------------------
+
+test('day tints read as one family too: deep, legible, navy-leaning', () => {
+  for (const t of TYPES) {
+    const [r, g, b] = parseRgb(starTint(t));
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    // A dark star on a pale sky: the mirror of the night test's `max >= 170`.
+    assert.ok(max <= 165, `${t} is a dark star, not a pale chip (max channel ${max})`);
+    assert.ok(max - min <= 120, `${t} keeps its chroma in check (spread ${max - min})`);
+    assert.ok(b >= min, `${t} keeps a navy bias (b ${b}, min ${min})`);
+  }
+});
+
+test('day tints stay mutually distinguishable (pairwise ΔE)', () => {
+  let worst = Infinity;
+  let worstPair = null;
+  for (let i = 0; i < TYPES.length; i += 1) {
+    for (let j = i + 1; j < TYPES.length; j += 1) {
+      const d = deltaE(parseRgb(starTint(TYPES[i])), parseRgb(starTint(TYPES[j])));
+      if (d < worst) {
+        worst = d;
+        worstPair = [TYPES[i], TYPES[j]];
+      }
+    }
+  }
+  assert.ok(worst >= 8, `closest day pair ${worstPair?.join(' / ')} is ΔE ${worst.toFixed(1)} apart`);
+});
+
+test('the day depth cue sinks a tint toward the navy without losing it', () => {
+  const chroma = (c) => Math.max(...c) - Math.min(...c);
+  const luma = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  for (const t of TYPES) {
+    const near = parseRgb(starTint(t, { cool: 0 }));
+    const far = parseRgb(starTint(t, { cool: 1 }));
+    assert.ok(chroma(far) <= chroma(near), `${t} loses chroma with distance`);
+    assert.ok(luma(far) <= luma(near) + 1, `${t} deepens with distance instead of glowing`);
+  }
+});
+
+test('a day star reads as ink against the pale sky (#dfe7f2 … #f7f9fd)', () => {
+  const luma = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const skyFloor = luma([223, 231, 242]); // --canvas-bg-bottom
+  for (const t of TYPES) {
+    assert.ok(luma(parseRgb(starTint(t))) < skyFloor - 40, `${t} reads as ink against the day sky`);
+  }
 });
 
 test('night tints read as one luminous family: pale, bright, cool', () => {
@@ -118,7 +170,8 @@ test('the cool depth cue pushes a tint toward white without losing its identity'
 });
 
 test('statusTint mirrors starTint for the epistemic projection', () => {
-  assert.equal(statusTint('candidate'), statusColor('candidate'), 'day is unchanged');
+  assert.equal(statusTint('candidate'), starTint('candidate', { hue: 38 }), 'day follows the star tints too');
+  assert.ok(deltaE(parseRgb(statusTint('candidate')), parseRgb(statusTint('confirmed'))) >= 8, 'day statuses stay apart');
   const a = statusTint('candidate', { dark: true });
   const b = statusTint('confirmed', { dark: true });
   assert.notEqual(a, b);

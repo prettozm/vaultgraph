@@ -13,7 +13,8 @@
 // The surface mirrors ui/graph-view.js so the app can swap views without
 // caring which one is mounted.
 import * as palette from '../lib/colors.js';
-import { colorFor, inkFor } from '../lib/colors.js';
+import { colorFor } from '../lib/colors.js';
+import { NODE_SLOP_PX, nearestSegment, pickTolerance } from '../lib/hit-test.js';
 import {
   createCamera,
   fitToPoints,
@@ -28,6 +29,8 @@ import {
   ANCHOR_COUNT,
   DEPTH_JITTER,
   LAYER_SPREAD,
+  LIGHT_GLOW_SCALE,
+  LIGHT_PARTICLE_RATIO,
   MAX_LABELS,
   coreRadiusPx,
   createParticles,
@@ -35,6 +38,7 @@ import {
   depthJitter,
   detectTheme,
   drawCoreLight,
+  drawCoreShade,
   drawHalo,
   driftOffset,
   easeToward,
@@ -55,8 +59,6 @@ import {
 /** World units between the extreme projection layers (z ∈ [-1, 1]). */
 export const Z_SPREAD = 520;
 
-const NODE_PICK_PX = 12;
-const EDGE_PICK_PX = 8;
 const MAX_PLANES = 24;
 const DOUBLE_TAP_MS = 320;
 const BASE_RADIUS = 5.6;    // world units for star class 1
@@ -65,8 +67,11 @@ const DIM_NODE = 0.22;
 const DIM_EDGE = 0.05;
 const SHAPE_MIN_PX = 3;
 const EDGE_ALPHA = 0.12;    // constellation lines, night ground
-const EDGE_ALPHA_LIGHT = 0.18; // paper keeps its original ink
+const EDGE_ALPHA_LIGHT = 0.18; // same lines, inverted luminance (day)
 const EDGE_FOCUS_ALPHA = 0.75;
+const EDGE_HOVER_ALPHA = 0.55; // hovering an edge brightens it, short of selection
+/** Tooltip offset from the cursor, in CSS pixels. */
+const TIP_OFFSET = { x: 14, y: -10 };
 const IDLE_YAW = 0.01;      // rad/s — one turn in ~10 minutes
 const IDLE_PITCH_DEG = 1.5; // amplitude of the slow pitch breathing
 const IDLE_PITCH_PERIOD = 40; // seconds for one pitch cycle
@@ -76,8 +81,6 @@ const LAYER_JITTER = DEPTH_JITTER;
 /** Shelf ink: the layers must read from their label and their grouping. */
 const PLANE_FILL_ALPHA = 0.012; // eight stacked shelves accumulate — keep each a whisper
 const PLANE_LINE_ALPHA = { layered: 0.16, expanded: 0.22, flat: 0.16 };
-// Paper does not bloom: the day theme keeps the pre-0.3.1 halo tightness.
-const PAPER_GLOW_SCALE = 0.42;
 
 // colors.js owns the shared vocabularies when it exposes them (Lot H added
 // statusColor / isTentative / shapeForType); these locals are the fallback so
@@ -128,7 +131,8 @@ export function createGraphView3D(canvas, handlers = {}) {
   let projection = null;
   let emphasis = null;
   let selection = null;
-  let hover = null;
+  let hover = null;      // { kind: 'node'|'edge', id } under the cursor
+  let hoverPoint = null; // last cursor position, canvas-local CSS px (tooltip anchor)
   let cam = createCamera();
   let running = false;
   let rafId = 0;
@@ -181,9 +185,9 @@ export function createGraphView3D(canvas, handlers = {}) {
 
   function refreshQuality(width, height, dpr) {
     quality = qualityFor(opts, { nodeCount: data.visibleNodes?.size ?? 0, width, height, dpr });
-    // The dense sky is a night-theme effect: on paper the old sparse dust is
-    // the right amount of texture, so the day theme keeps its original density.
-    const count = Math.round(particleCountFor(quality) * (tokens.dark ? 1 : 0.18));
+    // The day sky keeps the same field, thinned out: dark motes on a pale
+    // ground carry much further than pale motes on a dark one.
+    const count = Math.round(particleCountFor(quality) * (tokens.dark ? 1 : LIGHT_PARTICLE_RATIO));
     if (
       particleSize.count !== count ||
       particleSize.width !== Math.round(width) ||
@@ -278,30 +282,20 @@ export function createGraphView3D(canvas, handlers = {}) {
   }
 
   /**
-   * Star core colour. `cool` (0 near … 1 far) is the depth cue: distant stars
-   * drift further toward blue-white, so depth reads before the size does.
-   * Night uses the star tints (hue pushed toward cool white); day is unchanged.
+   * Star core colour. `cool` (0 near … 1 far) is the depth cue, so depth reads
+   * before the size does: night pushes a distant star toward blue-white, day
+   * pushes it deeper into the navy. Same tints, inverted luminance.
    */
   function starColor(node, cool = 0) {
     const byStatus = projection?.encoding?.colorBy === 'status';
-    if (!tokens.dark) {
-      return byStatus
-        ? statusColor(node.status, { dark: false })
-        : colorFor(node.type, { saturation: Math.max(28, 62 - cool * 26), lightness: 52 - cool * 14 });
-    }
+    const dark = tokens.dark;
     if (byStatus && typeof palette.statusTint === 'function') {
-      return palette.statusTint(node.status, { dark: true, cool });
+      return palette.statusTint(node.status, { dark, cool });
     }
-    if (byStatus) return statusColor(node.status, { dark: true });
+    if (byStatus) return statusColor(node.status, { dark });
     return typeof palette.starTint === 'function'
-      ? palette.starTint(node.type, { dark: true, cool })
-      : colorFor(node.type, { saturation: 40, lightness: 78 });
-  }
-
-  function strokeFor(node) {
-    return projection?.encoding?.colorBy === 'status'
-      ? (tokens.dark ? 'rgba(10,14,24,0.85)' : '#2a2f38')
-      : inkFor(node.type);
+      ? palette.starTint(node.type, { dark, cool })
+      : colorFor(node.type, { saturation: 40, lightness: dark ? 78 : 42 });
   }
 
   function isDimmed(id, selectedNodeId) {
@@ -361,9 +355,10 @@ export function createGraphView3D(canvas, handlers = {}) {
     // Shelves are scaffolding, not subject. On the night ground a translucent
     // pane is the single loudest thing on screen, so the plane is almost gone:
     // what carries the layer is its label and the vertical grouping of stars.
-    const fillAlpha = tokens.dark ? PLANE_FILL_ALPHA : 0.06;
-    const strokeAlpha = tokens.dark ? PLANE_LINE_ALPHA[opts.layers] ?? 0.16 : 0.22;
-    const nearEdgeOnly = tokens.dark;
+    const fillAlpha = tokens.dark ? PLANE_FILL_ALPHA : PLANE_FILL_ALPHA * 1.6;
+    const strokeAlpha = PLANE_LINE_ALPHA[opts.layers] ?? 0.16;
+    // Both themes get the same shelf: one faint horizon line, never a glass box.
+    const nearEdgeOnly = true;
 
     const shelves = flat
       ? [{ label: null, z: 0, count: 0 }]
@@ -521,6 +516,8 @@ export function createGraphView3D(canvas, handlers = {}) {
     const dashed = { normal: new Map(), dim: [] };
     const focused = [];
     let selectedEdge = null;
+    let hoveredEdge = null;
+    let hoveredRelation = null;
 
     for (const edge of data.graph.edges) {
       if (!data.visibleEdges.has(edge.id)) continue;
@@ -534,11 +531,16 @@ export function createGraphView3D(canvas, handlers = {}) {
         (emphasis && emphasis.has(edge.from) && emphasis.has(edge.to)) ||
         (hover?.kind === 'node' && (edge.from === hover.id || edge.to === hover.id))
       );
-      if (!opts.edges && !touches && !isSelected) continue;
+      const isHovered = hover?.kind === 'edge' && hover.id === edge.id;
+      if (!opts.edges && !touches && !isSelected && !isHovered) continue;
       const dim = (emphasis && !touches) || (Boolean(selectedNodeId) && !touches);
       const depthAlpha = cue((a.depth + b.depth) / 2);
       const segment = { a, b, soft, depthAlpha };
 
+      if (hover?.kind === 'edge' && hover.id === edge.id) {
+        hoveredEdge = segment;
+        hoveredRelation = edge.relation;
+      }
       if (isSelected) selectedEdge = segment;
       else if (touches && !dim) focused.push(segment);
       else if (soft && dim) dashed.dim.push(segment);
@@ -580,6 +582,10 @@ export function createGraphView3D(canvas, handlers = {}) {
       strokeBatch(focused.filter((s) => !s.soft), tokens.edgeFocusColor(EDGE_FOCUS_ALPHA), 1.4);
       strokeBatch(focused.filter((s) => s.soft), tokens.edgeFocusColor(EDGE_FOCUS_ALPHA * 0.85), 1.2, [5, 4]);
     }
+    // Hovering an edge brightens it the way the selection does, one step down.
+    if (hoveredEdge && hoveredEdge !== selectedEdge) {
+      strokeBatch([hoveredEdge], tokens.edgeFocusColor(EDGE_HOVER_ALPHA), 2, hoveredEdge.soft ? [5, 4] : null);
+    }
     if (selectedEdge) {
       if (quality === 'high') strokeBatch([selectedEdge], tokens.glowColor(0.18), 5);
       strokeBatch([selectedEdge], tokens.glowColor(0.95), 2.4, selectedEdge.soft ? [5, 4] : null);
@@ -605,10 +611,13 @@ export function createGraphView3D(canvas, handlers = {}) {
           depthAlpha * (dim ? lerp(1, DIM_NODE, dimMix) : 1) * tw * (emphasised ? 1.35 : 1);
         const tint = starColor(node, coolness(p.depth));
         const r = radiusPx(p);
-        if (anchors.has(p.body.id) && quality !== 'low' && tokens.dark) {
-          drawHalo(ctx, sprites, tint, p.sx, p.sy, r, 'anchor', intensity, quality);
+        // Day halos: same sprites in the star's own tint, normal compositing,
+        // low alpha — a soft aura instead of a white-hot bloom.
+        const glow = intensity * (tokens.dark ? 1 : LIGHT_GLOW_SCALE);
+        if (anchors.has(p.body.id) && quality !== 'low') {
+          drawHalo(ctx, sprites, tint, p.sx, p.sy, r, 'anchor', glow, quality);
         }
-        drawHalo(ctx, sprites, tint, p.sx, p.sy, tokens.dark ? r : r * PAPER_GLOW_SCALE, opts.glow, intensity, quality);
+        drawHalo(ctx, sprites, tint, p.sx, p.sy, r, opts.glow, glow, quality);
         if (isSelected) {
           drawHalo(ctx, sprites, tokens.glowColor(1), p.sx, p.sy, r, 'select', 0.95 * tw, quality);
         }
@@ -633,13 +642,9 @@ export function createGraphView3D(canvas, handlers = {}) {
       nodePath(p.sx, p.sy, r, drawShape ? shapeFor(node.type) : 'circle');
       ctx.fillStyle = starColor(node, coolness(p.depth));
       ctx.fill();
-      if (tokens.dark) {
-        drawCoreLight(ctx, p.sx, p.sy, r, emphasised ? 1 : 0.82);
-      } else if (r >= 2.6) {
-        ctx.lineWidth = 1.1;
-        ctx.strokeStyle = strokeFor(node);
-        ctx.stroke();
-      }
+      // Densest at the centre: white-hot at night, deep navy by day.
+      if (tokens.dark) drawCoreLight(ctx, p.sx, p.sy, r, emphasised ? 1 : 0.82);
+      else drawCoreShade(ctx, p.sx, p.sy, r, emphasised ? 1 : 0.82);
 
       if (isSoftStatus(node.status)) {
         ctx.beginPath();
@@ -747,6 +752,33 @@ export function createGraphView3D(canvas, handlers = {}) {
       ctx.fillStyle = tokens.labelSoft;
       ctx.fillText('relation order, not calendar', 10, 10);
     }
+
+    // --- hover tooltip: the relation under the cursor (desktop) -------------
+    if (hoveredRelation && hoverPoint) drawEdgeTip(hoveredRelation, hoverPoint, viewport);
+  }
+
+  /** Small label near the cursor naming the hovered relation. */
+  function drawEdgeTip(relation, point, viewport) {
+    const text = String(relation ?? '');
+    if (!text) return;
+    ctx.save();
+    ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const w = ctx.measureText(text).width;
+    const x = Math.min(Math.max(point.x + TIP_OFFSET.x, 6), Math.max(6, viewport.width - w - 12));
+    const y = Math.min(Math.max(point.y + TIP_OFFSET.y, 12), viewport.height - 12);
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x - 6, y - 10, w + 12, 20, 5);
+    else ctx.rect(x - 6, y - 10, w + 12, 20);
+    ctx.fillStyle = tokens.halo;
+    ctx.fill();
+    ctx.strokeStyle = tokens.edgeFocusColor(0.35);
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = tokens.label;
+    ctx.fillText(text, x, y);
+    ctx.restore();
   }
 
   // --- animation ---------------------------------------------------------
@@ -835,15 +867,22 @@ export function createGraphView3D(canvas, handlers = {}) {
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   }
 
-  function pick(point) {
+  /**
+   * What is under `point` (canvas-local CSS px), in the order the user means:
+   * the star if the point is on it (core radius + a small slop), otherwise the
+   * nearest projected edge *segment* within `tolerance`, otherwise nothing.
+   * Segments with an endpoint behind the camera are not projected at all, so
+   * they can never be picked.
+   */
+  function pick(point, tolerance) {
     const viewport = cssSize();
     const projected = projectBodies(viewport, opts.animation && !paused);
     let best = null;
-    let bestDist = NODE_PICK_PX;
+    let bestDist = Infinity;
     for (const p of projected) {
-      const r = Math.max(2.2, radiusOf(p.body) * p.scale * 0.9);
+      const r = coreRadiusPx(bucketOf(p.body), p.scale) + NODE_SLOP_PX;
       const d = Math.hypot(p.sx - point.x, p.sy - point.y);
-      if (d <= Math.max(r, NODE_PICK_PX) && d < bestDist + r) {
+      if (d <= r && d < bestDist) {
         best = { kind: 'node', id: p.body.id };
         bestDist = d;
       }
@@ -851,22 +890,34 @@ export function createGraphView3D(canvas, handlers = {}) {
     if (best) return best;
 
     const byId = new Map(projected.map((p) => [p.body.id, p]));
-    let bestEdge = null;
-    let bestEdgeDist = EDGE_PICK_PX;
+    const segments = [];
     for (const edge of data.graph?.edges ?? []) {
       if (!data.visibleEdges.has(edge.id)) continue;
       const a = byId.get(edge.from);
       const b = byId.get(edge.to);
-      if (!a || !b) continue;
-      const mx = (a.sx + b.sx) / 2;
-      const my = (a.sy + b.sy) / 2;
-      const d = Math.hypot(mx - point.x, my - point.y);
-      if (d < bestEdgeDist) {
-        bestEdge = { kind: 'edge', id: edge.id };
-        bestEdgeDist = d;
-      }
+      if (!a || !b) continue; // an endpoint is behind the camera
+      segments.push({ id: edge.id, a: { x: a.sx, y: a.sy }, b: { x: b.sx, y: b.sy } });
     }
-    return bestEdge;
+    const hit = nearestSegment(point, segments, tolerance);
+    return hit ? { kind: 'edge', id: hit.id } : null;
+  }
+
+  /** Canvas-local screen point of one node, as last projected (drift included). */
+  function screenPointOfNode(id) {
+    const p = projectBodies(cssSize(), opts.animation && !paused).find((q) => q.body.id === id);
+    return p ? { x: p.sx, y: p.sy } : null;
+  }
+
+  /** Point at parameter `t` along an edge's projected segment, or null. */
+  function screenPointOnEdge(id, t = 0.5) {
+    const edge = data.graph?.edgeById?.get(id);
+    if (!edge) return null;
+    const projected = projectBodies(cssSize(), opts.animation && !paused);
+    const a = projected.find((p) => p.body.id === edge.from);
+    const b = projected.find((p) => p.body.id === edge.to);
+    if (!a || !b) return null;
+    const k = Math.min(Math.max(Number(t) || 0, 0), 1);
+    return { x: a.sx + (b.sx - a.sx) * k, y: a.sy + (b.sy - a.sy) * k };
   }
 
   // --- camera helpers ----------------------------------------------------
@@ -895,6 +946,9 @@ export function createGraphView3D(canvas, handlers = {}) {
 
   function onPointerDown(event) {
     canvas.setPointerCapture?.(event.pointerId);
+    // See graph-view.js: cancelling the pointerdown suppresses the ghost mouse
+    // click a touch would otherwise land on the sheet the tap just opened.
+    if (event.cancelable) event.preventDefault();
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY, type: event.pointerType });
     movedPx = 0;
     interacting = true;
@@ -917,12 +971,15 @@ export function createGraphView3D(canvas, handlers = {}) {
     touched();
     if (!pointers.has(event.pointerId)) {
       if (event.pointerType === 'mouse') {
-        const hit = pick(localPoint(event));
+        const point = localPoint(event);
+        const hit = pick(point, pickTolerance(event));
         const changed = (hit?.id ?? null) !== (hover?.id ?? null);
         hover = hit;
+        hoverPoint = point;
         if (canvas.style) canvas.style.cursor = hit ? 'pointer' : 'grab';
-        if (changed) {
-          handlers.onHover?.(hit);
+        // The tooltip follows the cursor, so an edge hover redraws on every move.
+        if (changed || hit?.kind === 'edge') {
+          if (changed) handlers.onHover?.(hit);
           invalidate();
         }
       }
@@ -968,7 +1025,7 @@ export function createGraphView3D(canvas, handlers = {}) {
       const wasGesture = gesture;
       gesture = null;
       if (event.type === 'pointerup' && movedPx < 6 && wasGesture?.kind !== 'pinch') {
-        const hit = pick(localPoint(event));
+        const hit = pick(localPoint(event), pickTolerance(event));
         const now = Date.now();
         if (hit?.kind === 'node' && lastTap.id === hit.id && now - lastTap.time < DOUBLE_TAP_MS) {
           lastTap = { time: 0, id: null };
@@ -993,14 +1050,23 @@ export function createGraphView3D(canvas, handlers = {}) {
     invalidate();
   }
 
+  // See graph-view.js: cancelling `touchend` suppresses the ghost mouse click
+  // a tap leaves behind, which would otherwise land on the sheet it opened.
+  const onTouchEnd = (event) => {
+    if (event.cancelable) event.preventDefault();
+  };
+
   canvas.addEventListener('pointerdown', onPointerDown);
   canvas.addEventListener('pointermove', onPointerMove, { passive: false });
   canvas.addEventListener('pointerup', endPointer);
   canvas.addEventListener('pointercancel', endPointer);
+  canvas.addEventListener('touchend', onTouchEnd, { passive: false });
   canvas.addEventListener('pointerleave', (event) => {
-    if (!pointers.has(event.pointerId) && hover) {
+    if (!pointers.has(event.pointerId) && (hover || hoverPoint)) {
+      const had = Boolean(hover);
       hover = null;
-      handlers.onHover?.(null);
+      hoverPoint = null;
+      if (had) handlers.onHover?.(null);
       invalidate();
     }
   });
@@ -1104,6 +1170,10 @@ export function createGraphView3D(canvas, handlers = {}) {
     },
     fitAll,
     focusNode,
+    /** Projected screen point of a node, canvas-local CSS px (test hook). */
+    screenPointOfNode,
+    /** Projected point at `t` along an edge, canvas-local CSS px (test hook). */
+    screenPointOnEdge,
     resetView() {
       cam = resetCamera(cam);
       fitAll();
@@ -1130,6 +1200,7 @@ export function createGraphView3D(canvas, handlers = {}) {
       canvas.removeEventListener('pointermove', onPointerMove);
       canvas.removeEventListener('pointerup', endPointer);
       canvas.removeEventListener('pointercancel', endPointer);
+      canvas.removeEventListener('touchend', onTouchEnd);
       canvas.removeEventListener('wheel', onWheel);
       sprites.clear();
     },

@@ -340,21 +340,38 @@ const TOKENS = {
     plane: '140, 160, 210',
     accent: '#7fb2e5',
   },
+  // v0.3.2 — day is the same constellation with the luminance inverted: pale
+  // sky, dark stars. The old "paper chart" branch is gone.
   light: {
-    bgTop: '#fbfbf9',
-    bgBottom: '#e9edf4',
-    vignette: 'rgba(20,30,50,0.10)',
-    particle: '90, 110, 150',
-    edge: '120, 130, 145',
-    edgeFocus: '40, 70, 120',
+    bgTop: '#f7f9fd',
+    bgBottom: '#dfe7f2',
+    vignette: 'rgba(30,45,80,0.10)',
+    particle: '70, 90, 130',
+    edge: '70, 90, 130',
+    edgeFocus: '30, 60, 110',
     label: '#14243a',
     labelSoft: '#5c6675',
-    halo: 'rgba(252,252,250,0.92)',
+    halo: 'rgba(247,249,253,0.92)',
     glow: '201, 138, 0',
-    plane: '120, 132, 150',
+    plane: '60, 80, 120',
     accent: '#2f6f9f',
   },
 };
+
+// --- day-theme calibration (v0.3.2) ---------------------------------------
+//
+// The day sky is the night sky with the luminance flipped, so every effect is
+// present but quieter: fewer motes, softer dust, a haze you have to look for,
+// and halos that darken instead of burning out.
+
+/** Fraction of the night dust count kept in the day sky. */
+export const LIGHT_PARTICLE_RATIO = 0.4;
+
+/** Day dust alpha multiplier — caps the brightest band at ≤ 0.25. */
+export const LIGHT_PARTICLE_ALPHA = 0.7;
+
+/** Day halo intensity multiplier: the tint aura is a whisper, not a bloom. */
+export const LIGHT_GLOW_SCALE = 0.5;
 
 function cssVar(styles, name, fallback) {
   try {
@@ -415,6 +432,13 @@ export const NEBULA_BLOBS = Object.freeze([
   Object.freeze({ x: 0.5, y: 0.92, r: 0.68, alpha: 0.045, rgb: '50, 135, 195' }),
 ]);
 
+/** Day haze: the same three blobs in pale blue, at a third of the alpha. */
+export const NEBULA_BLOBS_LIGHT = Object.freeze([
+  Object.freeze({ x: 0.22, y: 0.28, r: 0.85, alpha: 0.05, rgb: '120, 155, 215' }),
+  Object.freeze({ x: 0.8, y: 0.64, r: 0.75, alpha: 0.04, rgb: '135, 130, 205' }),
+  Object.freeze({ x: 0.5, y: 0.92, r: 0.68, alpha: 0.035, rgb: '110, 165, 205' }),
+]);
+
 /**
  * Three very large, very soft radial blobs baked once into an offscreen canvas.
  * They are what gives the ground *volume* — a flat gradient reads as a panel,
@@ -439,7 +463,7 @@ export function makeNebulaCache() {
       const g = canvas.getContext('2d');
       if (!g) return null;
       const span = Math.max(w, h);
-      for (const blob of NEBULA_BLOBS) {
+      for (const blob of key === 'light' ? NEBULA_BLOBS_LIGHT : NEBULA_BLOBS) {
         const cx = blob.x * w;
         const cy = blob.y * h;
         const r = blob.r * span;
@@ -484,8 +508,8 @@ export function paintBackground(ctx, width, height, tokens, options = {}) {
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, w, h);
 
-  if (tokens.dark && nebula) {
-    const baked = nebula.get(w, h, 'dark');
+  if (nebula) {
+    const baked = nebula.get(w, h, tokens.dark ? 'dark' : 'light');
     if (baked) ctx.drawImage(baked.canvas, 0, 0, w, h);
   }
 
@@ -514,7 +538,9 @@ export function paintBackground(ctx, width, height, tokens, options = {}) {
     return { x, y };
   };
 
+  // Night adds light to the ground; day subtracts it. Same field, inverted.
   const additive = tokens.dark;
+  const dust = tokens.dark ? 1 : LIGHT_PARTICLE_ALPHA;
   if (additive) ctx.globalCompositeOperation = 'lighter';
   for (let band = 0; band < STAR_BANDS; band += 1) {
     let any = false;
@@ -527,7 +553,7 @@ export function paintBackground(ctx, width, height, tokens, options = {}) {
       any = true;
     }
     if (!any) continue;
-    ctx.fillStyle = tokens.particleColor(BAND_ALPHA[band] ?? 0.2);
+    ctx.fillStyle = tokens.particleColor((BAND_ALPHA[band] ?? 0.2) * dust);
     ctx.fill();
   }
   // The ~6 % with a bloom: one extra path, drawn as slightly larger soft discs.
@@ -542,7 +568,7 @@ export function paintBackground(ctx, width, height, tokens, options = {}) {
       any = true;
     }
     if (any) {
-      ctx.fillStyle = tokens.particleColor(0.07);
+      ctx.fillStyle = tokens.particleColor(0.07 * dust);
       ctx.fill();
     }
   }
@@ -670,6 +696,24 @@ export function drawCoreLight(ctx, x, y, radiusPx, intensity = 1) {
   ctx.beginPath();
   ctx.arc(x, y, radiusPx * CORE_WHITE_RATIO, 0, TAU);
   ctx.fillStyle = `rgba(255, 255, 255, ${a.toFixed(3)})`;
+  ctx.fill();
+}
+
+/** Deep centre of a day star: colour and radius ratio of the dark pinpoint. */
+export const CORE_SHADE = '30, 42, 68';
+
+/**
+ * The day counterpart of `drawCoreLight`: instead of burning the middle out to
+ * white, it sinks it toward the navy the tints already lean on, so the rim
+ * keeps the hue and the centre reads as the densest part of the star.
+ */
+export function drawCoreShade(ctx, x, y, radiusPx, intensity = 1) {
+  if (!(radiusPx >= 2.4)) return;
+  const a = clamp(0.5 * clamp(intensity, 0, 1.2), 0, 1);
+  if (a <= 0.02) return;
+  ctx.beginPath();
+  ctx.arc(x, y, radiusPx * CORE_WHITE_RATIO, 0, TAU);
+  ctx.fillStyle = `rgba(${CORE_SHADE}, ${a.toFixed(3)})`;
   ctx.fill();
 }
 

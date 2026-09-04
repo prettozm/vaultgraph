@@ -131,6 +131,43 @@ function activeView() {
   return state.mode === '3d' && state.view3d ? state.view3d : state.view;
 }
 
+// --------------------------------------------------------------------------
+// Test hook (test/smoke.mjs)
+// --------------------------------------------------------------------------
+//
+// The touch smoke has to tap *a point on the canvas* and know what is under it.
+// Only the renderers know that (drift in 2D, the camera projection in 3D), so
+// they publish the screen point and the shell forwards it in viewport
+// coordinates — which is what `page.touchscreen.tap(x, y)` expects. Read-only,
+// tiny, and used by nothing in the product.
+function canvasOrigin() {
+  const canvas = state.mode === '3d' ? $('#graph-canvas-3d') : $('#graph-canvas');
+  const rect = canvas?.getBoundingClientRect();
+  return rect ? { x: rect.left, y: rect.top } : { x: 0, y: 0 };
+}
+
+function toViewport(point) {
+  if (!point) return null;
+  const o = canvasOrigin();
+  return { x: o.x + point.x, y: o.y + point.y };
+}
+
+globalThis.__vaultGraph = {
+  /** '2d' | '3d' — which renderer is mounted. */
+  activeView: () => (state.mode === '3d' && state.view3d ? '3d' : '2d'),
+  /** Viewport point of a node as currently drawn, or null. */
+  screenPointOfNode: (id) => toViewport(activeView()?.screenPointOfNode?.(id) ?? null),
+  /** Viewport point at parameter `t` along an edge as currently drawn, or null. */
+  screenPointOnEdge: (id, t = 0.5) => toViewport(activeView()?.screenPointOnEdge?.(id, t) ?? null),
+  /** Ids currently passing the filters, so a test can iterate candidates. */
+  visibleNodeIds: () => (state.graph ? [...currentVisibility()[0]] : []),
+  visibleEdgeIds: () => (state.graph ? [...currentVisibility()[1]] : []),
+  /** The relation name the inspector would show for an edge. */
+  relationOf: (id) => state.graph?.edgeById?.get(id)?.relation ?? null,
+  /** The label the inspector would show for a node. */
+  labelOf: (id) => state.graph?.nodeById?.get(id)?.label ?? null,
+};
+
 function showScreen(name) {
   for (const [key, node] of Object.entries(screens)) node.hidden = key !== name;
   if (name !== 'graph') {
@@ -244,17 +281,29 @@ function closeViewOptions() {
 // Theme (§18)
 // --------------------------------------------------------------------------
 
+/**
+ * Stamp the theme on the root element and reflect it in the toggle.
+ *
+ * v0.3.2: the theme has exactly **two** states, light and dark, and the root
+ * always carries one of them. `system` stays a valid *stored* value (old
+ * preferences, and the bootstrap in index.html still understands it) but it is
+ * resolved once, here, at load — never a third step in the switch.
+ */
 function applyTheme() {
-  const choice = state.prefs.theme ?? 'system';
-  const root = document.documentElement;
-  if (choice === 'system') delete root.dataset.theme;
-  else root.dataset.theme = choice;
-  const effective = effectiveTheme(choice);
+  const stored = state.prefs.theme ?? 'system';
+  const effective = effectiveTheme(stored);
+  // Resolve a legacy 'system' preference once, so the switch has two states.
+  if (stored !== effective) state.prefs = writePrefs({ theme: effective });
+  document.documentElement.dataset.theme = effective;
   const toggle = $('#theme-toggle');
   if (toggle) {
-    toggle.textContent = effective === 'dark' ? '☾' : '☀';
-    toggle.title = `Theme: ${choice} — click to switch`;
-    toggle.setAttribute('aria-label', `Colour theme: ${choice}. Switch theme.`);
+    const dark = effective === 'dark';
+    const label = dark ? 'Switch to day mode' : 'Switch to night mode';
+    toggle.textContent = dark ? '☾' : '☀';
+    toggle.title = label;
+    toggle.setAttribute('aria-label', label);
+    // Pressed = night mode is on; the label always names the *next* state.
+    toggle.setAttribute('aria-pressed', dark ? 'true' : 'false');
   }
   state.view?.setTheme?.();
   state.view3d?.setTheme?.();
@@ -267,10 +316,9 @@ function isDark() {
   return effectiveTheme(state.prefs.theme ?? 'system') === 'dark';
 }
 
-function cycleTheme() {
-  const order = ['system', 'light', 'dark'];
-  const next = order[(order.indexOf(state.prefs.theme ?? 'system') + 1) % order.length];
-  state.prefs = writePrefs({ theme: next });
+/** The header switch: light ⇄ dark, nothing in between. */
+function toggleTheme() {
+  state.prefs = writePrefs({ theme: isDark() ? 'light' : 'dark' });
   applyTheme();
   renderAll();
 }
@@ -1142,7 +1190,7 @@ function wire() {
   $('#refresh-button').addEventListener('click', () => {
     if (state.target) load(state.target, { refresh: true });
   });
-  $('#theme-toggle').addEventListener('click', cycleTheme);
+  $('#theme-toggle').addEventListener('click', toggleTheme);
 
   $('#view-2d').addEventListener('click', () => setMode('2d'));
   $('#view-3d').addEventListener('click', () => setMode('3d'));
@@ -1238,12 +1286,10 @@ function wire() {
       // Only when the user has not chosen explicitly: re-resolve the ambient-motion default.
       if (typeof state.prefs.visual?.animation !== 'boolean') pushVisualOptions();
     });
-    globalThis.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
-      applyTheme();
-      renderAll();
-    });
+    // The OS preference is resolved once at load (applyTheme): after that the
+    // theme is the user's own two-state choice and does not follow the system.
   } catch {
-    /* older browsers: the theme simply does not follow the system live */
+    /* older browsers: prefers-reduced-motion simply does not update live */
   }
 
   document.addEventListener('keydown', (event) => {

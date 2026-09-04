@@ -39,9 +39,10 @@ function textOrDash(value) {
 }
 
 function typeSwatch(type) {
-  // Swatches match the star tint actually painted on the canvas (pastel in the night theme).
+  // Swatches match the star tint actually painted on the canvas, in *both*
+  // themes: pastel on the night ground, deep navy-blend on the day one.
   const dark = globalThis.document?.documentElement?.dataset?.theme === 'dark';
-  const colour = dark && typeof starTint === 'function' ? starTint(type, { dark: true }) : colorFor(type);
+  const colour = typeof starTint === 'function' ? starTint(type, { dark }) : colorFor(type);
   return el('span', { class: 'swatch', style: `background:${colour}` });
 }
 

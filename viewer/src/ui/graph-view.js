@@ -8,15 +8,19 @@
 // Rendering is done in **screen space** (positions projected once per frame)
 // so halo sprites, line widths and label metrics are all expressed in CSS
 // pixels and stay crisp at every zoom level.
-import { colorFor, inkFor, statusColor, starTint, shapeForType, isTentative } from '../lib/colors.js';
+import { statusColor, starTint, shapeForType, isTentative } from '../lib/colors.js';
 import { boundsOf } from '../lib/layout.js';
+import { NODE_SLOP_PX, nearestSegment, pickTolerance } from '../lib/hit-test.js';
 import {
   ANCHOR_COUNT,
+  LIGHT_GLOW_SCALE,
+  LIGHT_PARTICLE_RATIO,
   MAX_LABELS,
   coreRadiusPx,
   createParticles,
   defaultVisualOptions,
   drawCoreLight,
+  drawCoreShade,
   drawHalo,
   driftOffset,
   easeToward,
@@ -43,17 +47,17 @@ const DIM_NODE = 0.22;       // "outside the focus" — dimmed, never removed
 const DIM_EDGE = 0.05;
 const SHAPE_MIN_PX = 3;      // below this the shape is unreadable → round dot
 const EDGE_ALPHA = 0.12;     // constellation lines on the night ground
-const EDGE_ALPHA_LIGHT = 0.16; // paper keeps its original ink
+const EDGE_ALPHA_LIGHT = 0.18; // same lines, inverted luminance (day)
 const EDGE_FOCUS_ALPHA = 0.75;
+const EDGE_HOVER_ALPHA = 0.55; // hovering an edge brightens it, short of selection
+/** Tooltip offset from the cursor, in CSS pixels. */
+const TIP_OFFSET = { x: 14, y: -10 };
 // 2D has no camera, so depth is faked by star class: the small classes sit a
 // little further back (lower alpha, cooler tint), the hubs sit in front.
 const CLASS_ALPHA = Object.freeze([0.72, 0.86, 0.95, 1]);
 const CLASS_COOL = Object.freeze([0.55, 0.3, 0.12, 0]);
 const BG_DRIFT_PX = 10;      // how far the sky itself wanders, screen pixels
 const BG_DRIFT_PERIOD = 190; // seconds for one lap of that wander
-// Paper does not bloom: on the day theme the halo is drawn at its pre-0.3.1
-// tightness (~2.6 × the core) so the light view is visually unchanged.
-const PAPER_GLOW_SCALE = 0.42;
 
 function cssVar(styles, name, fallback) {
   const value = styles.getPropertyValue(name);
@@ -119,7 +123,9 @@ export function createGraphView(canvas, handlers = {}) {
   const view = { scale: 1, tx: 0, ty: 0 };
   let data = { graph: null, sim: null, visibleNodes: new Set(), visibleEdges: new Set(), matches: new Set() };
   let selection = null;
-  let hover = null;
+  let hover = null;      // hovered node id
+  let hoverEdge = null;  // hovered edge id (desktop only)
+  let hoverPoint = null; // last cursor position, canvas-local CSS px (tooltip anchor)
   let emphasis = null;
   let palette = readPalette();
   let running = false;
@@ -142,6 +148,10 @@ export function createGraphView(canvas, handlers = {}) {
   let lastTs = 0;
   let dimMix = 0;      // 0 = nothing dimmed, 1 = focus dimming fully applied
   let paused = false;  // document hidden
+  /** Screen position of every drawn star, canvas-local CSS px, drift included.
+   *  Picking and the `__vaultGraph` test hook both read this, so a tap is
+   *  resolved against the pixels the user actually sees. */
+  let lastScreen = new Map();
 
   function cssSize() {
     const rect = canvas.getBoundingClientRect();
@@ -162,9 +172,9 @@ export function createGraphView(canvas, handlers = {}) {
 
   function refreshQuality(width, height, dpr) {
     quality = qualityFor(opts, { nodeCount: data.visibleNodes?.size ?? 0, width, height, dpr });
-    // The dense sky is a night-theme effect: on paper the old sparse dust is
-    // the right amount of texture, so the day theme keeps its original density.
-    const count = Math.round(particleCountFor(quality) * (tokens.dark ? 1 : 0.18));
+    // The day sky keeps the same field, thinned out: dark motes on a pale
+    // ground carry much further than pale motes on a dark one.
+    const count = Math.round(particleCountFor(quality) * (tokens.dark ? 1 : LIGHT_PARTICLE_RATIO));
     if (particleSize.count !== count || particleSize.width !== Math.round(width) || particleSize.height !== Math.round(height)) {
       particles = createParticles(count, width, height, 'vault-graph-2d');
       particleSize = { width: Math.round(width), height: Math.round(height), count };
@@ -226,15 +236,37 @@ export function createGraphView(canvas, handlers = {}) {
     bodies.forEach((b, i) => labelRank.set(b.id, i));
   }
 
-  function pickNode(world) {
+  // --- picking (screen space, CSS pixels) ---------------------------------
+  //
+  // Everything below works on the pixels that were drawn, not on world units:
+  // a fingertip is 22 px wide whatever the zoom, and the drift the eye sees is
+  // the drift the tap has to hit.
+
+  /** Canvas-local CSS-pixel position of a body, drift included. */
+  function screenOf(body) {
+    const known = lastScreen.get(body.id);
+    if (known) return known;
+    const off = driftOffset(body.id, clock, DRIFT_PX, opts.animation && !paused);
+    return { x: body.x * view.scale + view.tx + off.dx, y: body.y * view.scale + view.ty + off.dy };
+  }
+
+  function toLocal(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  }
+
+  /**
+   * Node under `point`, or null. A node only claims the point when the point
+   * is on the star itself — its core radius plus a small slop — so a tap that
+   * merely passes near a hub still belongs to the filament under the finger.
+   */
+  function pickNode(point) {
     let best = null;
     let bestDist = Infinity;
-    const animate = opts.animation && !paused;
     for (const body of visibleBodies()) {
-      const r = radiusOf(body) + 8 / view.scale;
-      // Pick against the drifted position actually drawn (drift is applied in screen px).
-      const off = driftOffset(body.id, clock, DRIFT_PX, animate);
-      const d = Math.hypot(body.x + off.dx / view.scale - world.x, body.y + off.dy / view.scale - world.y);
+      const p = screenOf(body);
+      const r = screenRadius(body) + NODE_SLOP_PX;
+      const d = Math.hypot(p.x - point.x, p.y - point.y);
       if (d <= r && d < bestDist) {
         best = body;
         bestDist = d;
@@ -243,33 +275,27 @@ export function createGraphView(canvas, handlers = {}) {
     return best;
   }
 
-  function distanceToSegment(p, a, b) {
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const len2 = dx * dx + dy * dy;
-    if (len2 === 0) return Math.hypot(p.x - a.x, p.y - a.y);
-    let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
-    t = Math.max(0, Math.min(1, t));
-    return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
-  }
-
-  function pickEdge(world) {
+  /** Nearest visible edge to `point` within `tolerance` px of its *segment*. */
+  function pickEdge(point, tolerance) {
     if (!data.graph || !data.sim) return null;
-    const tolerance = 7 / view.scale;
-    let best = null;
-    let bestDist = tolerance;
+    const segments = [];
     for (const edge of data.graph.edges) {
       if (!data.visibleEdges.has(edge.id)) continue;
       const a = data.sim.byId.get(edge.from);
       const b = data.sim.byId.get(edge.to);
       if (!a || !b) continue;
-      const d = distanceToSegment(world, a, b);
-      if (d < bestDist) {
-        best = edge;
-        bestDist = d;
-      }
+      segments.push({ id: edge.id, a: screenOf(a), b: screenOf(b) });
     }
-    return best;
+    const hit = nearestSegment(point, segments, tolerance);
+    return hit ? data.graph.edgeById.get(hit.id) ?? null : null;
+  }
+
+  /** Node first (only when the point is on the star), then the nearest edge. */
+  function pickAt(point, tolerance) {
+    const body = pickNode(point);
+    if (body) return { kind: 'node', id: body.id, body };
+    const edge = pickEdge(point, tolerance);
+    return edge ? { kind: 'edge', id: edge.id, edge } : null;
   }
 
   function faded(id) {
@@ -336,6 +362,8 @@ export function createGraphView(canvas, handlers = {}) {
         y: body.y * view.scale + view.ty + d.dy,
       });
     }
+    // Picking and the test hook read exactly what was drawn.
+    lastScreen = pos;
 
     const nodeDim = (id) => faded(id) || (Boolean(selectedNodeId) && id !== selectedNodeId && !neighbours.has(id));
     const nodeAlpha = (id) => (nodeDim(id) ? lerp(1, DIM_NODE, dimMix) : 1);
@@ -346,6 +374,7 @@ export function createGraphView(canvas, handlers = {}) {
     const dashed = { normal: new Map(), dim: [] }; // by status: hues differ
     const focused = [];
     let selectedEdge = null;
+    let hoveredEdge = null;
     const arrows = { normal: [], dim: [], focus: [] };
 
     for (const edge of data.graph.edges) {
@@ -366,6 +395,7 @@ export function createGraphView(canvas, handlers = {}) {
       const tentative = isTentative(edge.status) || edge.sources.length === 0;
       const segment = { a, b, edge, tentative };
 
+      if (edge.id === hoverEdge) hoveredEdge = segment;
       if (isSelected) selectedEdge = segment;
       else if (touchesSelection && !dim) focused.push(segment);
       else if (tentative && dim) dashed.dim.push(segment);
@@ -425,6 +455,11 @@ export function createGraphView(canvas, handlers = {}) {
       strokeBatch(solid, tokens.edgeFocusColor(EDGE_FOCUS_ALPHA), 1.4);
       strokeBatch(soft, tokens.edgeFocusColor(EDGE_FOCUS_ALPHA * 0.85), 1.2, [5, 4]);
     }
+    // Hovering an edge brightens it the way the selection does, one step down —
+    // a candidate keeps its dash, so "proposed" survives the highlight.
+    if (hoveredEdge && hoveredEdge !== selectedEdge) {
+      strokeBatch([hoveredEdge], tokens.edgeFocusColor(EDGE_HOVER_ALPHA), 2, hoveredEdge.tentative ? [5, 4] : null);
+    }
     if (selectedEdge) {
       if (quality === 'high') strokeBatch([selectedEdge], tokens.glowColor(0.18), 5);
       strokeBatch([selectedEdge], tokens.glowColor(0.95), 2.4, selectedEdge.tentative ? [5, 4] : null);
@@ -460,12 +495,16 @@ export function createGraphView(canvas, handlers = {}) {
         const emphasised = isSelected || hover === body.id;
         const tw = quality === 'low' ? 1 : twinkle(body.id, clock, animate);
         const tint = starColor(node, bucket);
-        const intensity = nodeAlpha(body.id) * (CLASS_ALPHA[bucket] ?? 1) * tw * (emphasised ? 1.35 : 1);
+        // Day halos are the same sprites in the star's own tint, drawn with
+        // normal compositing at low alpha: a soft aura, not a white-hot bloom.
+        const glowScale = tokens.dark ? 1 : LIGHT_GLOW_SCALE;
+        const intensity =
+          nodeAlpha(body.id) * (CLASS_ALPHA[bucket] ?? 1) * tw * (emphasised ? 1.35 : 1) * glowScale;
         // Anchors first (widest, faintest), so the tight bloom lands on top.
-        if (anchors.has(body.id) && quality !== 'low' && tokens.dark) {
+        if (anchors.has(body.id) && quality !== 'low') {
           drawHalo(ctx, sprites, tint, p.x, p.y, r, 'anchor', intensity, quality);
         }
-        drawHalo(ctx, sprites, tint, p.x, p.y, tokens.dark ? r : r * PAPER_GLOW_SCALE, opts.glow, intensity, quality);
+        drawHalo(ctx, sprites, tint, p.x, p.y, r, opts.glow, intensity, quality);
         if (isSelected) {
           // The warm accent bloom is the unmistakable "this one" signal.
           drawHalo(ctx, sprites, tokens.glowColor(1), p.x, p.y, r, 'select', 0.95 * tw, quality);
@@ -482,10 +521,9 @@ export function createGraphView(canvas, handlers = {}) {
       const bucket = bucketOf(body);
       const r = screenRadius(body);
       const isSelected = body.id === selectedNodeId;
-      const isNeighbour = neighbours.has(body.id) && !isSelected;
       const isMatch = data.matches.has(body.id);
       const emphasised = isSelected || hover === body.id || isMatch;
-      const alpha = nodeAlpha(body.id) * (tokens.dark ? CLASS_ALPHA[bucket] ?? 1 : 1);
+      const alpha = nodeAlpha(body.id) * (CLASS_ALPHA[bucket] ?? 1);
       const shape = shapeForType(node.type);
       // Below ~3 px a square and a circle are the same three pixels: fall back
       // to a dot (the hue still carries the type) unless the node is called out.
@@ -495,15 +533,10 @@ export function createGraphView(canvas, handlers = {}) {
       pathForShape(ctx, drawShape ? shape : 'circle', p.x, p.y, r);
       ctx.fillStyle = starColor(node, bucket);
       ctx.fill();
-      if (tokens.dark) {
-        // White-hot centre, tinted rim: what makes a filled shape read as a
-        // star rather than as a coloured chart marker.
-        drawCoreLight(ctx, p.x, p.y, r, emphasised ? 1 : 0.82);
-      } else if (r >= 2.4) {
-        ctx.strokeStyle = inkFor(node.type);
-        ctx.lineWidth = 1.1;
-        ctx.stroke();
-      }
+      // The centre is the densest part of the star: white-hot on the night
+      // ground, deep navy on the day one. Same gesture, inverted luminance.
+      if (tokens.dark) drawCoreLight(ctx, p.x, p.y, r, emphasised ? 1 : 0.82);
+      else drawCoreShade(ctx, p.x, p.y, r, emphasised ? 1 : 0.82);
 
       // Dashed halo = candidate / unresolved, or no recorded provenance (§4).
       const tentative = isTentative(node.status) || node.sources.length === 0;
@@ -546,16 +579,45 @@ export function createGraphView(canvas, handlers = {}) {
     if (opts.labels !== 'off' || selectedNodeId) {
       drawLabels(bodies, pos, { selectedNodeId, neighbours });
     }
+
+    // --- hover tooltip: the relation under the cursor (desktop) -------------
+    if (hoveredEdge && hoverPoint) drawEdgeTip(hoveredEdge.edge, hoverPoint);
   }
 
   /**
-   * Star core colour. Night: the type hue pushed toward a cool white, cooled
-   * further for the small classes so size and depth agree. Day: the ink palette,
-   * untouched — paper is not a sky.
+   * Star core colour: the type hue blended toward the theme's extreme (cool
+   * white at night, deep navy by day) and pushed further for the small classes,
+   * so size and depth agree. One palette, two luminance directions.
    */
   function starColor(node, bucket = 3) {
-    if (!tokens.dark) return colorFor(node.type, { lightness: 52 });
-    return starTint(node.type, { dark: true, cool: CLASS_COOL[bucket] ?? 0 });
+    return starTint(node.type, { dark: tokens.dark, cool: CLASS_COOL[bucket] ?? 0 });
+  }
+
+  /** Small label near the cursor naming the hovered relation. */
+  function drawEdgeTip(edge, point) {
+    if (!edge) return;
+    const text = String(edge.relation ?? '');
+    if (!text) return;
+    ctx.save();
+    ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const w = ctx.measureText(text).width;
+    const { width, height } = cssSize();
+    // Flip the tip back inside the canvas rather than letting it run off.
+    const x = Math.min(Math.max(point.x + TIP_OFFSET.x, 6), Math.max(6, width - w - 12));
+    const y = Math.min(Math.max(point.y + TIP_OFFSET.y, 12), height - 12);
+    ctx.fillStyle = tokens.halo;
+    ctx.beginPath();
+    ctx.roundRect?.(x - 6, y - 10, w + 12, 20, 5);
+    if (!ctx.roundRect) ctx.rect(x - 6, y - 10, w + 12, 20);
+    ctx.fill();
+    ctx.strokeStyle = tokens.edgeFocusColor(0.35);
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = tokens.label;
+    ctx.fillText(text, x, y);
+    ctx.restore();
   }
 
   function drawLabels(bodies, pos, { selectedNodeId, neighbours }) {
@@ -714,9 +776,15 @@ export function createGraphView(canvas, handlers = {}) {
   canvas.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
     canvas.setPointerCapture(event.pointerId);
+    // Cancelling the pointerdown suppresses the compatibility mouse events a
+    // touch produces. Without it a tap that opens the inspector sheet is
+    // followed, ~300 ms later, by a ghost click on whatever the sheet has just
+    // put under the finger — the phone regression that reads as "it selected
+    // something else".
+    if (event.cancelable) event.preventDefault();
     pointerMoved = false;
     const world = toWorld(event.clientX, event.clientY);
-    const body = pickNode(world);
+    const body = pickNode(toLocal(event.clientX, event.clientY));
     if (body) {
       dragging = { kind: 'node', body, dx: body.x - world.x, dy: body.y - world.y };
       body.fixed = true;
@@ -727,14 +795,18 @@ export function createGraphView(canvas, handlers = {}) {
 
   canvas.addEventListener('pointermove', (event) => {
     if (!dragging) {
-      const world = toWorld(event.clientX, event.clientY);
-      const body = pickNode(world);
-      const next = body ? body.id : null;
-      const edgeHit = !body && pickEdge(world);
-      canvas.style.cursor = body || edgeHit ? 'pointer' : 'grab';
-      if (next !== hover) {
-        hover = next;
-        handlers.onHover?.(next);
+      const point = toLocal(event.clientX, event.clientY);
+      const hit = pickAt(point, pickTolerance(event));
+      const nextNode = hit?.kind === 'node' ? hit.id : null;
+      const nextEdge = hit?.kind === 'edge' ? hit.id : null;
+      canvas.style.cursor = hit ? 'pointer' : 'grab';
+      const moved = nextEdge && (hoverPoint?.x !== point.x || hoverPoint?.y !== point.y);
+      hoverPoint = point;
+      if (nextNode !== hover || nextEdge !== hoverEdge || moved) {
+        const changed = nextNode !== hover;
+        hover = nextNode;
+        hoverEdge = nextEdge;
+        if (changed) handlers.onHover?.(nextNode);
         invalidate();
       }
       return;
@@ -770,15 +842,15 @@ export function createGraphView(canvas, handlers = {}) {
       invalidate();
       return;
     }
-    const world = toWorld(event.clientX, event.clientY);
-    const body = pickNode(world);
-    if (body) {
-      handlers.onSelectNode?.(body.id);
+    // Resolution order (v0.3.2): the star if the tap is on it, else the nearest
+    // relation within the pointer's own tolerance, else deselect.
+    const hit = pickAt(toLocal(event.clientX, event.clientY), pickTolerance(event));
+    if (hit?.kind === 'node') {
+      handlers.onSelectNode?.(hit.id);
       return;
     }
-    const edge = pickEdge(world);
-    if (edge) {
-      handlers.onSelectEdge?.(edge.id);
+    if (hit?.kind === 'edge') {
+      handlers.onSelectEdge?.(hit.id);
       return;
     }
     handlers.onClearSelection?.();
@@ -786,6 +858,27 @@ export function createGraphView(canvas, handlers = {}) {
 
   canvas.addEventListener('pointerup', endDrag);
   canvas.addEventListener('pointercancel', endDrag);
+  // Cancelling `touchend` is what actually suppresses the ~300 ms ghost mouse
+  // click a tap leaves behind. The pointer path above has already handled the
+  // gesture, so the compatibility events have nothing left to contribute — and
+  // if the tap opened the inspector sheet, the ghost click would land *on the
+  // sheet*, selecting whatever it put under the finger.
+  canvas.addEventListener(
+    'touchend',
+    (event) => {
+      if (event.cancelable) event.preventDefault();
+    },
+    { passive: false }
+  );
+  canvas.addEventListener('pointerleave', () => {
+    if (!hover && !hoverEdge && !hoverPoint) return;
+    const hadNode = Boolean(hover);
+    hover = null;
+    hoverEdge = null;
+    hoverPoint = null;
+    if (hadNode) handlers.onHover?.(null);
+    invalidate();
+  });
 
   canvas.addEventListener(
     'wheel',
@@ -872,10 +965,30 @@ export function createGraphView(canvas, handlers = {}) {
       fitTo(visibleBodies());
       invalidate();
     },
+    /**
+     * Canvas-local CSS-pixel position of a node, as last drawn (drift included).
+     * Picking uses the same map; exposed for the `__vaultGraph` test hook.
+     * @returns {?{x:number,y:number}}
+     */
+    screenPointOfNode(id) {
+      const p = lastScreen.get(id);
+      return p ? { x: p.x, y: p.y } : null;
+    },
+    /** Point at parameter `t` along an edge's drawn segment, or null. */
+    screenPointOnEdge(id, t = 0.5) {
+      const edge = data.graph?.edgeById?.get(id);
+      if (!edge) return null;
+      const a = lastScreen.get(edge.from);
+      const b = lastScreen.get(edge.to);
+      if (!a || !b) return null;
+      const k = Math.min(Math.max(Number(t) || 0, 0), 1);
+      return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
+    },
     /** Back to a neutral camera: fit everything, drop emphasis and hover (§15). */
     resetView() {
       emphasis = null;
       hover = null;
+      hoverEdge = null;
       fitTo(visibleBodies());
       invalidate();
     },

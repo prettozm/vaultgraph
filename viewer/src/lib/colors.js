@@ -89,13 +89,21 @@ export function shapeForType(type) {
 // between tints stays large enough to keep the type channel legible
 // (test/colors.test.mjs asserts both the family and the separation).
 //
-// The day theme keeps `colorFor` untouched — paper wants ink, not starlight.
+// v0.3.2: the day theme is the *same* language with the luminance inverted —
+// a dark star on a pale sky. The blend target flips from a cool white to a deep
+// navy, everything else (family, depth cue, pairwise separation) is unchanged.
 
 /** Cool white the night tints converge toward (#dfe8ff). */
 export const STAR_WHITE = Object.freeze([223, 232, 255]);
 
+/** Deep navy the day tints converge toward (#1e2a44). */
+export const STAR_INK = Object.freeze([30, 42, 68]);
+
 /** How far a night tint travels toward `STAR_WHITE` (0 = raw hue, 1 = white). */
 export const STAR_TINT_MIX = 0.55;
+
+/** How far a day tint travels toward `STAR_INK` (0 = raw hue, 1 = navy). */
+export const STAR_INK_MIX = 0.4;
 
 function clamp01(v) {
   return v < 0 ? 0 : v > 1 ? 1 : v;
@@ -123,30 +131,45 @@ export function coolBlend(rgb, mix = STAR_TINT_MIX) {
   return rgb.map((v, i) => Math.round(v + (STAR_WHITE[i] - v) * m));
 }
 
+/** Blend an [r,g,b] toward the deep navy ink by `mix` ∈ [0,1] (day theme). */
+export function inkBlend(rgb, mix = STAR_INK_MIX) {
+  const m = clamp01(mix);
+  return rgb.map((v, i) => Math.round(v + (STAR_INK[i] - v) * m));
+}
+
 function rgbCss([r, g, b], alpha = 1) {
   return alpha >= 1 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 /**
- * Star colour for a category. Night: the hue, pushed toward cool white and
- * slightly cooled further with depth. Day: exactly `colorFor` — unchanged.
+ * Star colour for a category, in the current theme's luminance direction.
+ *
+ * Night: the hue, pushed toward cool white and cooled further with depth — a
+ * pale star on a black ground. Day: the same hue, pushed toward a deep navy
+ * and *deepened* further with depth — a dark star on a pale sky. Both keep the
+ * pairwise separation the type channel needs (see test/colors.test.mjs).
  *
  * @param {string} value node type (or any category)
  * @param {{dark?:boolean, hue?:number, alpha?:number, mix?:number, cool?:number}} [options]
- *   `cool` 0…1 pushes a distant star further toward white-blue (depth fog).
+ *   `cool` 0…1 is the depth cue: it drains chroma and pushes the tint further
+ *   toward the theme's blend target (white-blue at night, navy by day).
  */
-export function starTint(value, { dark = false, hue = null, alpha = 1, mix = STAR_TINT_MIX, cool = 0 } = {}) {
-  if (!dark) return colorFor(value, { alpha });
+export function starTint(value, { dark = false, hue = null, alpha = 1, mix = null, cool = 0 } = {}) {
   const h = Number.isFinite(hue) ? hue : hueFor(value);
   const c = clamp01(cool);
-  // Distant stars: a touch less chroma and a touch more blue-white.
+  if (!dark) {
+    // Day: a deep, legible core tint. Lightness sits well below the pale sky
+    // so the star reads as ink, and depth pushes it further into the navy.
+    const base = hslToRgb(h, 0.66 - c * 0.16, 0.44);
+    return rgbCss(inkBlend(base, clamp01((mix ?? STAR_INK_MIX) + c * 0.18)), alpha);
+  }
+  // Night: distant stars get a touch less chroma and a touch more blue-white.
   const base = hslToRgb(h, 0.88 - c * 0.2, 0.62);
-  return rgbCss(coolBlend(base, clamp01(mix + c * 0.18)), alpha);
+  return rgbCss(coolBlend(base, clamp01((mix ?? STAR_TINT_MIX) + c * 0.18)), alpha);
 }
 
 /** Same treatment for an epistemic status, so the status projection matches. */
 export function statusTint(status, { dark = false, alpha = 1, cool = 0 } = {}) {
-  if (!dark) return statusColor(status, { alpha });
   const key = statusKind(status);
   const h = key ? STATUS_HUES[key] : hueFor(status);
   return starTint(String(status ?? ''), { dark, hue: h, alpha, cool });

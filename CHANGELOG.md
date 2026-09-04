@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.3.2 — the phone pass (2026-09-04)
+
+Three regressions reported from a real phone, fixed in one pass and verified by a touch-emulated
+smoke (`viewer/test/smoke.mjs`, section "touch": a 390 × 844 context with `hasTouch`).
+
+### Relations can be tapped with a finger
+- Edge picking runs along the **whole segment** in screen pixels (`viewer/src/lib/hit-test.js`,
+  `distanceToSegment` / `nearestSegment`), not within 8 px of the midpoint. The tolerance follows
+  the pointer: **22 px** for a finger or any coarse pointer, **10 px** for a mouse. Candidate
+  relations keep their dashed look and get the same hit zone.
+- Resolution order at a tap: a star wins only when the tap is on it (core radius + 6 px), otherwise
+  the nearest relation within tolerance, otherwise the selection is cleared. In 3D the test runs on
+  the projected segments; a segment with an endpoint behind the camera is not picked at all.
+- Desktop hover brightens the relation under the cursor and shows its name in a small tooltip;
+  the cursor is `pointer` over a star *or* a relation.
+- A tap no longer leaves a ghost mouse click ~300 ms later: both canvases cancel `touchend`, so a
+  tap that opens the inspector sheet cannot then "click" whatever the sheet put under the finger.
+
+### The theme switch has two states and stays on screen
+- The header switch is **light ⇄ dark**, with no `system` step. `system` remains a valid stored
+  value (old preferences, and the inline bootstrap in `index.html`) and is resolved once at load.
+  `aria-pressed` reflects the state and the label always names the next one ("Switch to day mode" /
+  "Switch to night mode").
+- At 390 px the repo name truncates first; the switch never shrinks and never wraps (40 × 40 target).
+
+### Day = the same constellation, luminance inverted
+- The "paper chart" look is gone (`PAPER_GLOW_SCALE` removed). Day is the same renderer on a pale
+  sky (`--canvas-bg-top #f7f9fd` → `--canvas-bg-bottom #dfe7f2`), with a soft vignette, ~40 % of the
+  night dust in a dark-blue tint (alpha ≤ 0.25), a pale-blue nebula haze (alpha ≤ 0.05), the same
+  four size classes and shape cores, the same faint shelves, and constellation edges at alpha 0.18.
+- `starTint(type, { dark: false })` blends the type hue 40 % toward a deep navy (`#1e2a44`); stars
+  are dark cores with soft tinted halos (normal compositing, no `lighter`) instead of white-hot
+  blooms. Pairwise ΔE is asserted for the day palette exactly as for the night one.
+- Legend and inspector swatches follow the canvas in both themes (`panels.js typeSwatch`).
+
+### Tunable constants
+`viewer/src/lib/hit-test.js` — `TOUCH_TOLERANCE_PX` (22), `MOUSE_TOLERANCE_PX` (10), `NODE_SLOP_PX` (6).
+`viewer/src/lib/colors.js` — `STAR_INK` (#1e2a44), `STAR_INK_MIX` (0.4).
+`viewer/src/ui/starfield.js` — `LIGHT_PARTICLE_RATIO` (0.4), `LIGHT_PARTICLE_ALPHA` (0.7),
+`LIGHT_GLOW_SCALE` (0.5), `NEBULA_BLOBS_LIGHT`, `CORE_SHADE`.
+
+### Known limitations
+- The day theme was judged from `viewer/test/smoke-touch-light-2d.png`, not by a human on a phone.
+- Touch is emulated by Chromium (`hasTouch`, `isMobile`), not measured on a physical device.
+
 ## 0.3.1 — constellation pass (2026-09-04)
 
 Night rendering reworked after review: deeper ground with soft nebula haze and a stronger vignette,

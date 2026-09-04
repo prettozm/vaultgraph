@@ -18,19 +18,21 @@
   --warn-bg: #fdf3e6;
   --danger: #9b2c2c;
   --danger-bg: #fbecec;
-  /* Canvas ground — read by both renderers. Light = paper, not a dimmed night. */
-  --canvas-bg: #f6f7fa;
-  --canvas-bg-top: #fbfbf9;
-  --canvas-bg-bottom: #e9edf4;
-  --canvas-vignette: rgba(20, 30, 50, 0.1);
-  --canvas-particle: 90, 110, 150;
-  --canvas-edge: 120, 130, 145;
-  --canvas-edge-focus: 40, 70, 120;
+  /* Canvas ground — read by both renderers. Day (v0.3.2) is the *same*
+     constellation with the luminance inverted: a pale sky and dark stars,
+     not a paper chart. Every token mirrors its night counterpart. */
+  --canvas-bg: #eef3fa;
+  --canvas-bg-top: #f7f9fd;
+  --canvas-bg-bottom: #dfe7f2;
+  --canvas-vignette: rgba(30, 45, 80, 0.1);
+  --canvas-particle: 70, 90, 130;
+  --canvas-edge: 70, 90, 130;
+  --canvas-edge-focus: 30, 60, 110;
   --canvas-glow: 201, 138, 0;
-  --canvas-plane: 120, 132, 150;
+  --canvas-plane: 60, 80, 120;
   --canvas-label: #14243a;
   --canvas-label-soft: #5c6675;
-  --canvas-halo: rgba(252, 252, 250, 0.92);
+  --canvas-halo: rgba(247, 249, 253, 0.92);
   --shadow: 0 1px 2px rgba(20, 25, 35, 0.06), 0 8px 24px rgba(20, 25, 35, 0.08);
   --chrome: var(--panel);
   --chrome-line: var(--line);
@@ -211,8 +213,13 @@ textarea { font-family: var(--mono); font-size: 12px; }
   background: none; border: 0; cursor: pointer; padding: 4px 0;
   font-size: 12px; letter-spacing: 0.16em; font-weight: 700; color: var(--ink);
 }
-.appbar-repo { font-size: 13px; color: var(--ink); overflow-wrap: anywhere; }
+/* The repo name is the only elastic thing in the bar: it gives up its width
+   first so the controls on the right are never pushed out of the viewport. */
+.appbar-repo { font-size: 13px; color: var(--ink); overflow-wrap: anywhere; min-width: 0; flex: 0 1 auto; }
 .appbar-version { font-size: 11.5px; color: var(--ink-faint); }
+/* The theme switch must always be reachable — it never shrinks, never wraps. */
+#theme-toggle { flex: 0 0 auto; min-width: var(--tap); min-height: var(--tap); }
+.appbar #refresh-button { flex: 0 0 auto; }
 .freshness {
   background: none; border: 0; cursor: help; padding: 4px 6px; border-radius: 6px;
   font-size: 12.5px; color: var(--ink); font-weight: 600;
@@ -507,10 +514,11 @@ textarea { font-family: var(--mono); font-size: 12px; }
 @media (max-width: 768px) {
   /* The header must never eat the graph: one line, elided, details on tap. */
   .appbar { padding: 6px 10px; gap: 8px; flex-wrap: nowrap; overflow: hidden; }
-  .appbar-repo { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 38vw; font-size: 12px; }
+  .appbar-repo { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 34vw; font-size: 12px; }
   .appbar-version { display: none; }
-  .appbar-commit { white-space: nowrap; font-size: 11px; }
-  .freshness { white-space: nowrap; font-size: 11.5px; padding: 4px; }
+  .appbar-build { display: none; }
+  .appbar-commit { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 18vw; font-size: 11px; flex: 0 1 auto; }
+  .freshness { white-space: nowrap; font-size: 11.5px; padding: 4px; flex: 0 0 auto; }
   .appbar-fetched { display: none; }
   .wordmark-small { display: none; }
   .stats { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding: 5px 10px; }

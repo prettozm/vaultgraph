@@ -45,6 +45,18 @@ async function open(viewport, { colorScheme, query = '' } = {}) {
   return { page, consoleErrors };
 }
 
+/** A real touch context (a phone), not just a narrow window. */
+async function openTouch(viewport, { colorScheme = 'dark', query = '' } = {}) {
+  const context = await browser.newContext({ viewport, deviceScaleFactor: 1, colorScheme, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  const consoleErrors = [];
+  page.on('pageerror', (e) => consoleErrors.push(String(e)));
+  page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
+  await page.goto(url + query);
+  await page.waitForSelector('#screen-graph:not([hidden])', { timeout: 15000 }).catch(() => {});
+  return { page, context, consoleErrors };
+}
+
 /** One `data-visual` control, wherever it lives (popover row or 3D quick row). */
 const visualControl = (page, key, value) =>
   page.locator(value === undefined ? `[data-visual="${key}"]` : `[data-visual="${key}"][data-value="${value}"]`);
@@ -261,6 +273,225 @@ const storedVisual = (page) =>
   check(consoleErrors.length === 0, `mobile: no console/page errors (${consoleErrors.slice(0, 3).join(' | ')})`);
   await page.screenshot({ path: path.join(here, 'smoke-mobile.png') });
   await page.close();
+}
+
+// ---------------------------------------------------------------- touch (v0.3.2)
+// The three regressions the human hit on a phone: an edge could not be tapped,
+// the theme switch had a third state and drifted off the header, and the day
+// theme was a different product. Everything below is driven with a finger.
+{
+  const viewport = { width: 390, height: 844 };
+  const { page, context, consoleErrors } = await openTouch(viewport, { colorScheme: 'dark', query: '&view=2d' });
+  await page.waitForTimeout(900); // let the layout settle and a few frames land
+
+  const hookReady = await page.evaluate(() => Boolean(globalThis.__vaultGraph?.screenPointOnEdge));
+  check(hookReady, 'touch: the __vaultGraph test hook is exposed');
+  const inspectorText = () => page.locator('#inspector').innerText().catch(() => '');
+  /** What the inspector is actually showing: its kind line and its title. */
+  const inspectorHead = () =>
+    page.evaluate(() => ({
+      kind: document.querySelector('#inspector .inspector-kind')?.textContent?.trim() ?? '',
+      title: document.querySelector('#inspector .inspector-title')?.textContent?.trim() ?? '',
+    }));
+  const canvasBox = async (sel) => (await page.locator(sel).boundingBox()) ?? { x: 0, y: 0, width: 0, height: 0 };
+
+  /**
+   * Wait until the force layout has stopped moving. Ambient drift never
+   * stops (±3 px over 9–17 s ⇒ well under a pixel per sample), so "stable"
+   * means no star moved more than 2 px between two samples 250 ms apart.
+   * Without this the tap chases a node that is still being simulated.
+   */
+  async function waitForStableLayout(tries = 40) {
+    const sample = () =>
+      page.evaluate(() => {
+        const vg = globalThis.__vaultGraph;
+        return vg.visibleNodeIds().map((id) => vg.screenPointOfNode(id));
+      });
+    let previous = await sample();
+    for (let i = 0; i < tries; i += 1) {
+      await page.waitForTimeout(250);
+      const next = await sample();
+      const worst = next.reduce((m, p, k) => {
+        const q = previous[k];
+        return p && q ? Math.max(m, Math.hypot(p.x - q.x, p.y - q.y)) : m;
+      }, 0);
+      previous = next;
+      if (worst <= 2) return true;
+    }
+    return false;
+  }
+
+  /** A node whose star sits comfortably inside the canvas. */
+  const pickNodeTarget = async (box) =>
+    page.evaluate(({ box }) => {
+      const vg = globalThis.__vaultGraph;
+      const inside = (p) => p && p.x > box.x + 24 && p.x < box.x + box.width - 24 && p.y > box.y + 24 && p.y < box.y + box.height - 24;
+      for (const id of vg.visibleNodeIds()) {
+        const p = vg.screenPointOfNode(id);
+        if (inside(p)) return { id, point: p, label: vg.labelOf(id) };
+      }
+      return null;
+    }, { box });
+
+  /**
+   * An edge whose midpoint is ≥ 30 px from *every* node on screen: proof the
+   * tap resolved against the segment and not against a star next to it.
+   */
+  const pickEdgeTarget = async (box) =>
+    page.evaluate(({ box }) => {
+      const vg = globalThis.__vaultGraph;
+      const nodes = vg.visibleNodeIds().map((id) => vg.screenPointOfNode(id)).filter(Boolean);
+      const inside = (p) => p && p.x > box.x + 24 && p.x < box.x + box.width - 24 && p.y > box.y + 24 && p.y < box.y + box.height - 24;
+      for (const id of vg.visibleEdgeIds()) {
+        const p = vg.screenPointOnEdge(id, 0.5);
+        if (!inside(p)) continue;
+        const clearance = Math.min(...nodes.map((n) => Math.hypot(n.x - p.x, n.y - p.y)));
+        if (clearance >= 30) return { id, point: p, relation: vg.relationOf(id), clearance: Math.round(clearance) };
+      }
+      return null;
+    }, { box });
+
+  /** One finger tap on a node, then on a lone edge, in whichever view is mounted. */
+  async function tapNodeThenEdge(mode, selector) {
+    const box = await canvasBox(selector);
+    check(
+      (await page.evaluate(() => globalThis.__vaultGraph.activeView())) === mode,
+      `touch/${mode}: the hook reports the mounted renderer`
+    );
+    check(await waitForStableLayout(), `touch/${mode}: the layout settles, so a tap lands where it was aimed`);
+
+    const node = await pickNodeTarget(box);
+    check(Boolean(node), `touch/${mode}: found a node to tap`);
+    if (node) {
+      await page.touchscreen.tap(node.point.x, node.point.y);
+      await page.waitForTimeout(350);
+      // The inspector title is uppercased by CSS, so compare case-insensitively.
+      const head = await inspectorHead();
+      const text = (await inspectorText()).toLocaleLowerCase();
+      check(
+        /node/i.test(head.kind) &&
+          head.title.toLocaleLowerCase() === node.label.toLocaleLowerCase() &&
+          text.includes(node.label.toLocaleLowerCase()),
+        `touch/${mode}: tapping the star opens "${node.label}" — inspector shows ${head.kind || '(nothing)'} "${head.title}"`
+      );
+      await page.click('#inspector-close').catch(() => {});
+      await page.waitForTimeout(250);
+    }
+
+    // The inspector is a bottom sheet on a phone: it must be out of the way, or
+    // the next "tap on the canvas" lands on the sheet instead.
+    check(
+      await page.locator('#inspector-panel').isHidden(),
+      `touch/${mode}: the inspector sheet is closed before the next tap`
+    );
+    const edge = await pickEdgeTarget(box);
+    check(Boolean(edge), `touch/${mode}: found an edge whose midpoint is ≥ 30 px from every node`);
+    if (edge) {
+      await page.touchscreen.tap(edge.point.x, edge.point.y);
+      await page.waitForTimeout(350);
+      // Strict: the inspector must be showing *that relation*, not a node that
+      // happens to list it among its own relations.
+      const near = await page.evaluate(({ point }) => {
+        const vg = globalThis.__vaultGraph;
+        let best = null;
+        for (const id of vg.visibleNodeIds()) {
+          const p = vg.screenPointOfNode(id);
+          if (!p) continue;
+          const d = Math.hypot(p.x - point.x, p.y - point.y);
+          if (!best || d < best.d) best = { id, d: Math.round(d), label: vg.labelOf(id) };
+        }
+        return best;
+      }, { point: edge.point });
+      const head = await inspectorHead();
+      const text = (await inspectorText()).toLocaleLowerCase();
+      check(
+        /relation/i.test(head.kind) &&
+          head.title.toLocaleLowerCase() === edge.relation.toLocaleLowerCase() &&
+          text.includes(edge.relation.toLocaleLowerCase()),
+        `touch/${mode}: tapping edge ${edge.id} (relation "${edge.relation}", ${edge.clearance} px clear of every node) opens it` +
+          ` — inspector shows ${head.kind || '(nothing)'} "${head.title}"; nearest star after the tap: ${near?.label} at ${near?.d} px`
+      );
+      await page.click('#inspector-close').catch(() => {});
+      await page.waitForTimeout(200);
+    }
+    return edge;
+  }
+
+  const edge2d = await tapNodeThenEdge('2d', '#graph-canvas');
+
+  // ---- the theme switch: two states, always inside the header.
+  const readTheme = () =>
+    page.evaluate(() => ({
+      theme: document.documentElement.dataset.theme,
+      bgTop: getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg-top').trim(),
+      pressed: document.querySelector('#theme-toggle')?.getAttribute('aria-pressed'),
+      label: document.querySelector('#theme-toggle')?.getAttribute('aria-label'),
+    }));
+  const before = await readTheme();
+  check(before.theme === 'dark' && before.pressed === 'true', `touch: starts in night mode (${before.theme}, aria-pressed=${before.pressed})`);
+  check(/day/i.test(before.label ?? ''), `touch: the switch names the next state ("${before.label}")`);
+
+  const toggleBox = await page.locator('#theme-toggle').boundingBox();
+  check(Boolean(toggleBox), 'touch: the theme switch is laid out');
+  if (toggleBox) {
+    check(
+      toggleBox.x + toggleBox.width <= viewport.width,
+      `touch: the switch stays inside 390 px (right edge ${Math.round(toggleBox.x + toggleBox.width)})`
+    );
+    check(
+      toggleBox.width >= 40 && toggleBox.height >= 40,
+      `touch: the switch is a real target (${Math.round(toggleBox.width)}×${Math.round(toggleBox.height)})`
+    );
+  }
+
+  await page.tap('#theme-toggle');
+  await page.waitForTimeout(400);
+  const light = await readTheme();
+  check(light.theme === 'light', `touch: one tap flips to day mode (${light.theme})`);
+  check(light.bgTop !== before.bgTop && light.bgTop === '#f7f9fd', `touch: the canvas ground follows the theme (${light.bgTop})`);
+  check(light.pressed === 'false' && /night/i.test(light.label ?? ''), `touch: the switch reports day mode ("${light.label}")`);
+  const lightBox = await page.locator('#theme-toggle').boundingBox();
+  check(
+    lightBox && lightBox.x + lightBox.width <= viewport.width,
+    `touch: the switch is still inside 390 px in day mode (right edge ${Math.round((lightBox?.x ?? 0) + (lightBox?.width ?? 0))})`
+  );
+
+  await page.tap('#theme-toggle');
+  await page.waitForTimeout(400);
+  const backToDark = await readTheme();
+  check(backToDark.theme === 'dark', `touch: a second tap goes back to night mode (${backToDark.theme})`);
+  check(backToDark.bgTop === before.bgTop, `touch: the night ground is restored (${backToDark.bgTop})`);
+
+  // ---- the same two taps in 3D, on the projected segments.
+  if (has3D) {
+    await page.tap('#view-3d');
+    await page.waitForTimeout(900);
+    check(await page.locator('#graph-canvas-3d').isVisible(), 'touch: 3D canvas is mounted');
+    await tapNodeThenEdge('3d', '#graph-canvas-3d');
+    await page.waitForTimeout(600);
+    await page.screenshot({ path: path.join(here, 'smoke-touch-dark-3d.png') });
+    await page.tap('#view-2d');
+    await page.waitForTimeout(500);
+  } else {
+    console.log('SKIP  touch: 3D module not built yet (viewer/dist/ui/graph-view-3d.js)');
+    await page.screenshot({ path: path.join(here, 'smoke-touch-dark-3d.png') });
+  }
+
+  // ---- the day hero shot: same constellation, inverted luminance, no selection.
+  await page.tap('#theme-toggle');
+  await page.waitForTimeout(300);
+  await page.goto(url + '&view=2d'); // a fresh load also proves the inline bootstrap stamps day
+  await page.waitForSelector('#screen-graph:not([hidden])', { timeout: 15000 }).catch(() => {});
+  const booted = await page.evaluate(() => document.documentElement.dataset.theme);
+  check(booted === 'light', `touch: the stored theme is stamped before paint on reload (${booted})`);
+  await page.waitForTimeout(1200);
+  check(await page.locator('#graph-canvas').isVisible(), 'touch: the day 2D canvas renders');
+  await page.screenshot({ path: path.join(here, 'smoke-touch-light-2d.png') });
+
+  check(consoleErrors.length === 0, `touch: no console/page errors (${consoleErrors.slice(0, 3).join(' | ')})`);
+  if (edge2d) console.log(`      touch: 2D edge tapped = ${edge2d.id} ("${edge2d.relation}")`);
+  await page.close();
+  await context.close();
 }
 
 // ------------------------------------------------ dark hero shot (v0.3)
