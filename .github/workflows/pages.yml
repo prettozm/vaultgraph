@@ -36,6 +36,17 @@ jobs:
       - name: Build viewer
         run: npm run build:viewer
 
+      # The branch-mode site serves the app at /viewer/src/; keep those URLs working when the
+      # Actions deployment (app at the site root) is the one being served. Query string preserved.
+      - name: Keep /viewer/src/ URLs working
+        run: |
+          mkdir -p viewer/dist/viewer/src
+          cat > viewer/dist/viewer/src/index.html <<'HTML'
+          <!doctype html><meta charset="utf-8"><title>Vault Graph</title>
+          <script>location.replace(new URL('../../' + location.search + location.hash, location.href).href);</script>
+          <p>Redirecting to the <a href="../../">Vault Graph viewer</a>…</p>
+          HTML
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
         with:
