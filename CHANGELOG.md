@@ -5,7 +5,7 @@
 Visual redesign of both canvases; the `.vault-graph` protocol is untouched.
 
 ### Identity
-- Night theme: deep navy → black gradient ground, soft vignette, a sparse field of dim dust drifting
+- Night theme is the default (the identity); the header switch offers the day variant and the choice is remembered. Deep navy → black gradient ground, soft vignette, a sparse field of dim dust drifting
   very slowly; day theme keeps the same design on a paper ground. The theme switch stays.
 - Nodes are stars: type hue (unchanged palette, lifted for dark ground) + type shape core (circle,
   square `source`, diamond `decision`, triangle `hypothese`), four size classes by degree, soft

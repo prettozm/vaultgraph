@@ -32,7 +32,7 @@ const QUALITIES = new Set(QUALITY_LEVELS);
 export const DEFAULT_PREFS = {
   view: '2d',
   projection: 'context',
-  theme: 'system',
+  theme: 'dark', // the product identity is the night constellation; the switch offers day
   lastRepo: '',
   legendOpen: true,
   visual: { ...DEFAULT_VISUAL },

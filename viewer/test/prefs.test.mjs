@@ -74,7 +74,7 @@ test('visual options merge field by field and survive a round-trip (v0.3)', () =
       edges: false,
     });
     // The other preferences are untouched by a visual patch.
-    assert.equal(readPrefs().theme, 'system');
+    assert.equal(readPrefs().theme, 'dark');
     // Resetting to the defaults puts `animation` back to "unset".
     writePrefs({ visual: { ...DEFAULT_VISUAL } });
     assert.deepEqual(readPrefs().visual, DEFAULT_VISUAL);
