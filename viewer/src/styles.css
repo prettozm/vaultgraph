@@ -604,3 +604,5 @@ textarea { font-family: var(--mono); font-size: 12px; }
     --chrome-blur: blur(8px);
   }
 }
+
+.appbar-build { font-size: 10.5px; color: var(--ink-faint); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin-left: 6px; opacity: 0.8; }

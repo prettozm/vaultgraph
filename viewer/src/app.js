@@ -152,6 +152,15 @@ function currentVisual() {
  * Hand the current options to both views. The renderers are Lot R's; every
  * call is optional-chained so the app runs identically before they land.
  */
+/** Show which viewer build is running (from the meta stamped at build time; 'dev' when serving src/). */
+function showBuildStamp() {
+  const el = document.getElementById('build-stamp');
+  if (!el) return;
+  const build = document.querySelector('meta[name="vault-graph-build"]')?.content || 'dev';
+  el.textContent = `build ${build}`;
+}
+showBuildStamp();
+
 function pushVisualOptions() {
   const options = { ...currentVisual(), theme: isDark() ? 'dark' : 'light' };
   state.view?.setVisualOptions?.(options);
