@@ -130,11 +130,53 @@ export function renderWarnings(container, warnings) {
   );
 }
 
-/** Legend: shapes, types and statuses — never colour alone (§19). */
+/** The five sentences that make the visual encoding readable without a manual (v0.3). */
+const READING_ITEMS = [
+  { glyph: 'degree', text: 'Brighter · bigger = more relations' },
+  { glyph: 'halo', text: 'Warm halo = selected / hovered' },
+  { glyph: 'dashed', text: 'Dashed = candidate (proposed, not a fact)' },
+  { glyph: 'dimmed', text: 'Dimmed = outside focus' },
+  { glyph: 'shelves', text: 'Shelves = layers of the current projection' },
+];
+
+/**
+ * Legend: shapes, types, statuses and how to read the constellation — never
+ * colour alone (§19).
+ * @param {HTMLElement} container
+ * @param {{typeFacet?:Array, statusFacet?:Array, dark?:boolean,
+ *          statusFirst?:boolean, collapsed?:boolean, onToggle?:Function}} ctx
+ */
 export function renderLegend(container, ctx) {
-  const { typeFacet = [], statusFacet = [], dark = false } = ctx ?? {};
+  const {
+    typeFacet = [],
+    statusFacet = [],
+    dark = false,
+    statusFirst = false,
+    collapsed = false,
+    onToggle = null,
+  } = ctx ?? {};
   clear(container);
+  container.classList.toggle('is-collapsed', Boolean(collapsed));
   const groups = [];
+
+  // Mobile affordance: the legend can be folded away so the graph keeps the screen.
+  if (onToggle) {
+    container.append(
+      el('button', {
+        type: 'button',
+        class: 'legend-toggle',
+        'aria-expanded': collapsed ? 'false' : 'true',
+        'aria-controls': container.id || null,
+        'aria-label': collapsed ? 'Show the legend' : 'Hide the legend',
+        title: collapsed ? 'Show the legend' : 'Hide the legend',
+        // The callback receives the next *open* state, not the current one.
+        onclick: () => onToggle(collapsed),
+      }, [
+        el('span', { class: 'legend-toggle-text', text: 'Legend' }),
+        el('span', { class: 'legend-chevron', 'aria-hidden': 'true', text: collapsed ? '⌃' : '⌄' }),
+      ])
+    );
+  }
 
   const shapes = [...new Set((typeFacet.length ? typeFacet : []).map((t) => shapeForType(t.value)))];
   const shapeList = shapes.length > 1 ? shapes : ['circle'];
@@ -162,22 +204,24 @@ export function renderLegend(container, ctx) {
   }
 
   if (statusFacet.length) {
-    groups.push(
-      el('div', { class: 'legend-group' }, [
-        el('span', { class: 'legend-title', text: 'Status' }),
-        ...statusFacet.slice(0, 8).map((entry) =>
-          el('span', { class: 'legend-item' }, [
-            el('span', {
-              class: isTentative(entry.value) ? 'glyph dashed' : 'swatch',
-              style: isTentative(entry.value)
-                ? `border-color:${statusColor(entry.value, { dark })}`
-                : `background:${statusColor(entry.value, { dark })}`,
-            }),
-            el('span', { text: entry.value }),
-          ])
-        ),
-      ])
-    );
+    const statusGroup = el('div', { class: 'legend-group' }, [
+      el('span', { class: 'legend-title', text: 'Status' }),
+      ...statusFacet.slice(0, 8).map((entry) =>
+        el('span', { class: 'legend-item' }, [
+          el('span', {
+            class: isTentative(entry.value) ? 'glyph dashed' : 'swatch',
+            style: isTentative(entry.value)
+              ? `border-color:${statusColor(entry.value, { dark })}`
+              : `background:${statusColor(entry.value, { dark })}`,
+          }),
+          el('span', { text: entry.value }),
+        ])
+      ),
+    ]);
+    // When the current 3D projection colours by status, status is what the
+    // picture is actually saying: it leads the legend instead of trailing it.
+    if (statusFirst) groups.unshift(statusGroup);
+    else groups.push(statusGroup);
   }
 
   groups.push(
@@ -185,6 +229,19 @@ export function renderLegend(container, ctx) {
       el('span', { class: 'legend-title', text: 'Relation' }),
       el('span', { class: 'legend-item', text: '— confirmed / explicit' }),
       el('span', { class: 'legend-item', text: '- - candidate or unsourced' }),
+    ])
+  );
+
+  groups.push(
+    el('div', { class: 'legend-group legend-reading' }, [
+      el('span', { class: 'legend-title', text: 'Reading' }),
+      ...READING_ITEMS.map((item) =>
+        el('span', { class: 'legend-item' }, [
+          el('span', { class: `glyph ${item.glyph}`, 'aria-hidden': 'true' }),
+          el('span', { text: item.text }),
+        ])
+      ),
+      el('span', { class: 'legend-item legend-aside', text: 'Motion is ambient only — it carries no information.' }),
     ])
   );
 

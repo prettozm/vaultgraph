@@ -184,12 +184,121 @@
           <button type="button" class="seg-button" data-hops="2" disabled>2 hops</button>
           <button type="button" class="seg-button" data-hops="0" disabled>All</button>
         </div>
+        <div id="layers-quick" class="segmented layers-quick" role="group" aria-label="Layer spread (3D)" hidden>
+          <span class="toolbar-label">Layers</span>
+          <button type="button" class="seg-button" data-visual="layers" data-value="flat" aria-label="Layers: flat" aria-pressed="false">Flat</button>
+          <button type="button" class="seg-button" data-visual="layers" data-value="layered" aria-label="Layers: layered" aria-pressed="true">Layered</button>
+          <button type="button" class="seg-button" data-visual="layers" data-value="expanded" aria-label="Layers: expanded" aria-pressed="false">Expanded</button>
+        </div>
         <span class="spacer"></span>
         <button id="zoom-out" type="button" class="icon-button" aria-label="Zoom out" title="Zoom out">−</button>
         <button id="zoom-in" type="button" class="icon-button" aria-label="Zoom in" title="Zoom in">+</button>
         <button id="recenter-button" type="button" class="ghost">Recenter</button>
         <button id="fit-button" type="button" class="ghost">Fit</button>
         <button id="reset-view-button" type="button" class="ghost">Reset view</button>
+        <div class="view-menu-wrap">
+          <button
+            id="view-options-button"
+            type="button"
+            class="secondary"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            aria-controls="view-options"
+            aria-label="View settings"
+            title="Appearance of the constellation"
+          >
+            View
+          </button>
+        </div>
+      </div>
+
+      <!-- View settings live outside the scrolling toolbar so the popover is
+           never clipped by it; the button above owns them via aria-controls. -->
+      <div id="view-backdrop" class="backdrop" hidden></div>
+      <div id="view-options" class="view-popover" role="dialog" aria-modal="false" aria-label="View settings" hidden>
+            <div class="drawer-handle" aria-hidden="true"></div>
+            <div class="panel-head">
+              <h2 class="panel-title">View</h2>
+              <span class="spacer"></span>
+              <button id="view-options-close" type="button" class="icon-button" aria-label="Close the view settings">✕</button>
+            </div>
+            <div class="view-options-body">
+              <div class="view-row">
+                <span class="view-row-label" id="label-animation">Ambient motion</span>
+                <button
+                  type="button"
+                  class="switch"
+                  data-visual="animation"
+                  role="switch"
+                  aria-checked="true"
+                  aria-labelledby="label-animation"
+                  aria-label="Ambient motion"
+                >
+                  <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+                  <span class="switch-text" data-switch-text>On</span>
+                </button>
+              </div>
+
+              <div class="view-row">
+                <span class="view-row-label" id="label-labels">Labels</span>
+                <div class="segmented" role="group" aria-labelledby="label-labels">
+                  <button type="button" class="seg-button" data-visual="labels" data-value="auto" aria-label="Labels: auto" aria-pressed="true">Auto</button>
+                  <button type="button" class="seg-button" data-visual="labels" data-value="hover" aria-label="Labels: on hover" aria-pressed="false">Hover</button>
+                  <button type="button" class="seg-button" data-visual="labels" data-value="all" aria-label="Labels: all" aria-pressed="false">All</button>
+                  <button type="button" class="seg-button" data-visual="labels" data-value="off" aria-label="Labels: off" aria-pressed="false">Off</button>
+                </div>
+              </div>
+
+              <div class="view-row">
+                <span class="view-row-label" id="label-edges">Edges</span>
+                <button
+                  type="button"
+                  class="switch"
+                  data-visual="edges"
+                  role="switch"
+                  aria-checked="true"
+                  aria-labelledby="label-edges"
+                  aria-label="Show relations"
+                >
+                  <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+                  <span class="switch-text" data-switch-text>On</span>
+                </button>
+              </div>
+
+              <div class="view-row">
+                <span class="view-row-label" id="label-glow">Glow</span>
+                <div class="segmented" role="group" aria-labelledby="label-glow">
+                  <button type="button" class="seg-button" data-visual="glow" data-value="off" aria-label="Glow: off" aria-pressed="false">Off</button>
+                  <button type="button" class="seg-button" data-visual="glow" data-value="low" aria-label="Glow: low" aria-pressed="false">Low</button>
+                  <button type="button" class="seg-button" data-visual="glow" data-value="medium" aria-label="Glow: medium" aria-pressed="true">Medium</button>
+                  <button type="button" class="seg-button" data-visual="glow" data-value="high" aria-label="Glow: high" aria-pressed="false">High</button>
+                </div>
+              </div>
+
+              <div class="view-row">
+                <span class="view-row-label" id="label-layers">
+                  Layers <span id="layers-hint" class="view-row-hint">3D view</span>
+                </span>
+                <div class="segmented" role="group" aria-labelledby="label-layers">
+                  <button type="button" class="seg-button" data-visual="layers" data-value="flat" aria-label="Layers: flat" aria-pressed="false">Flat</button>
+                  <button type="button" class="seg-button" data-visual="layers" data-value="layered" aria-label="Layers: layered" aria-pressed="true">Layered</button>
+                  <button type="button" class="seg-button" data-visual="layers" data-value="expanded" aria-label="Layers: expanded" aria-pressed="false">Expanded</button>
+                </div>
+              </div>
+
+              <div class="view-row">
+                <span class="view-row-label" id="label-quality">Quality</span>
+                <div class="segmented" role="group" aria-labelledby="label-quality">
+                  <button type="button" class="seg-button" data-visual="quality" data-value="auto" aria-label="Quality: auto" aria-pressed="true">Auto</button>
+                  <button type="button" class="seg-button" data-visual="quality" data-value="low" aria-label="Quality: low" aria-pressed="false">Low</button>
+                  <button type="button" class="seg-button" data-visual="quality" data-value="high" aria-label="Quality: high" aria-pressed="false">High</button>
+                </div>
+              </div>
+
+              <button id="view-options-reset" type="button" class="link-button view-reset" aria-label="Reset the view settings to their defaults">
+                Reset view settings
+              </button>
+            </div>
       </div>
 
       <!-- Stage: the graph is the product (34) -->

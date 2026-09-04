@@ -35,15 +35,29 @@ const check = (cond, msg) => { console.log(`${cond ? 'OK  ' : 'FAIL'} ${msg}`); 
 
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
 
-async function open(viewport) {
-  const page = await browser.newPage({ viewport, deviceScaleFactor: 1 });
+async function open(viewport, { colorScheme, query = '' } = {}) {
+  const page = await browser.newPage({ viewport, deviceScaleFactor: 1, colorScheme });
   const consoleErrors = [];
   page.on('pageerror', (e) => consoleErrors.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
-  await page.goto(url);
+  await page.goto(url + query);
   await page.waitForSelector('#screen-graph:not([hidden])', { timeout: 15000 }).catch(() => {});
   return { page, consoleErrors };
 }
+
+/** One `data-visual` control, wherever it lives (popover row or 3D quick row). */
+const visualControl = (page, key, value) =>
+  page.locator(value === undefined ? `[data-visual="${key}"]` : `[data-visual="${key}"][data-value="${value}"]`);
+
+/** The persisted visual preferences, as the page itself stored them. */
+const storedVisual = (page) =>
+  page.evaluate(() => {
+    try {
+      return JSON.parse(localStorage.getItem('vault-graph.prefs.v1'))?.visual ?? null;
+    } catch {
+      return null;
+    }
+  });
 
 // ---------------------------------------------------------------- desktop
 {
@@ -104,6 +118,81 @@ async function open(viewport) {
     await page.waitForTimeout(300);
     check(await page.locator('#graph-canvas-3d').isVisible(), 'desktop: 3D canvas visible after toggling 3D');
     await page.waitForTimeout(700); await page.screenshot({ path: new URL('./smoke-3d-context.png', import.meta.url).pathname });
+
+    // ---- View settings (v0.3): the whole constellation, unfiltered.
+    await page.getByRole('button', { name: /Candidates/ }).click();
+    await page.waitForTimeout(250);
+    await page.click('#view-options-button');
+    await page.waitForTimeout(150);
+    check(await page.locator('#view-options').isVisible(), 'desktop: View popover opens');
+    check(
+      (await page.getAttribute('#view-options-button', 'aria-expanded')) === 'true',
+      'desktop: the View button reports its expanded state'
+    );
+    await visualControl(page, 'animation').first().click();
+    await page.waitForTimeout(120);
+    check(
+      (await visualControl(page, 'animation').first().getAttribute('aria-checked')) === 'false',
+      'desktop: Ambient motion switches off'
+    );
+    await visualControl(page, 'labels', 'all').first().click();
+    await visualControl(page, 'edges').first().click();
+    await visualControl(page, 'glow', 'high').first().click();
+    await page.waitForTimeout(200);
+    check(
+      (await visualControl(page, 'labels', 'all').first().getAttribute('aria-pressed')) === 'true' &&
+        (await visualControl(page, 'glow', 'high').first().getAttribute('aria-pressed')) === 'true',
+      'desktop: Labels=All and Glow=High are reflected in the controls'
+    );
+
+    // Layers: set from the popover, then from the 3D quick row that mirrors it.
+    check(await page.locator('#layers-quick').isVisible(), 'desktop: the 3D Layers quick control is shown in 3D');
+    await page.locator('#view-options [data-visual="layers"][data-value="expanded"]').click();
+    await page.waitForTimeout(150);
+    await page.click('#view-options-close');
+    await page.waitForTimeout(150);
+    check(await page.locator('#view-options').isHidden(), 'desktop: View popover closes');
+    check(await page.locator('#graph-canvas-3d').isVisible(), 'desktop: 3D canvas survives the visual options');
+    await page.waitForTimeout(700);
+    await page.screenshot({ path: new URL('./smoke-3d-expanded.png', import.meta.url).pathname });
+
+    await page.locator('#layers-quick [data-visual="layers"][data-value="flat"]').click();
+    await page.waitForTimeout(700);
+    check(await page.locator('#graph-canvas-3d').isVisible(), 'desktop: 3D canvas stays visible on Layers=Flat');
+    await page.screenshot({ path: new URL('./smoke-3d-flat.png', import.meta.url).pathname });
+
+    const visualPrefs = await storedVisual(page);
+    check(
+      visualPrefs?.animation === false &&
+        visualPrefs?.labels === 'all' &&
+        visualPrefs?.edges === false &&
+        visualPrefs?.glow === 'high' &&
+        visualPrefs?.layers === 'flat',
+      `desktop: visual options persisted to localStorage (${JSON.stringify(visualPrefs)})`
+    );
+    check(
+      /labels=all/.test(page.url()) && /layers=flat/.test(page.url()),
+      `desktop: non-default visual options reach the shareable URL (${page.url().split('?')[1] ?? ''})`
+    );
+
+    // Escape closes the popover rather than the selection underneath it.
+    await page.click('#view-options-button');
+    await page.waitForTimeout(120);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+    check(await page.locator('#view-options').isHidden(), 'desktop: Escape closes the View popover');
+
+    // Put the constellation back the way the rest of the run expects it.
+    await page.click('#view-options-button');
+    await page.waitForTimeout(120);
+    await page.click('#view-options-reset');
+    await page.waitForTimeout(200);
+    check(
+      (await storedVisual(page))?.glow === 'medium',
+      'desktop: "Reset view settings" restores the defaults'
+    );
+    await page.click('#view-options-close');
+    await page.waitForTimeout(150);
     const options = await page.locator('#projection-select option').count();
     check(options > 0, `desktop: projection selector lists ${options} projections`);
     const enabled = await page.$$eval('#projection-select option:not([disabled])', (o) => o.map((x) => x.value));
@@ -151,6 +240,15 @@ async function open(viewport) {
   await page.waitForTimeout(200);
   check(await page.locator('#filters-drawer').isHidden(), 'mobile: filters sheet closes');
 
+  // View settings reuse the bottom-sheet pattern (v0.3).
+  await page.click('#view-options-button');
+  await page.waitForTimeout(200);
+  check(await page.locator('#view-options').isVisible(), 'mobile: View opens as a bottom sheet');
+  check(await page.locator('#view-backdrop').isVisible(), 'mobile: the View sheet has a backdrop');
+  await page.click('#view-options-close');
+  await page.waitForTimeout(200);
+  check(await page.locator('#view-options').isHidden(), 'mobile: View sheet closes');
+
   await page.click('.quick-action.candidate');
   await page.waitForTimeout(300);
   const inspector = await page.locator('#inspector').innerText().catch(() => '');
@@ -162,6 +260,30 @@ async function open(viewport) {
 
   check(consoleErrors.length === 0, `mobile: no console/page errors (${consoleErrors.slice(0, 3).join(' | ')})`);
   await page.screenshot({ path: path.join(here, 'smoke-mobile.png') });
+  await page.close();
+}
+
+// ------------------------------------------------ dark hero shot (v0.3)
+// The identity of the viewer is judged on this one: night ground, luminous
+// nodes, chrome that recedes. Nothing is asserted about pixels — only that the
+// dark theme renders the 3D Context projection without errors.
+{
+  const { page, consoleErrors } = await open(
+    { width: 1280, height: 800 },
+    { colorScheme: 'dark', query: has3D ? '&view=3d&projection=context' : '' }
+  );
+  const theme = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg').trim()
+  );
+  check(theme === '#070a14', `dark: the canvas ground is the night token (${theme || 'unset'})`);
+  const wrap = await page.evaluate(() => getComputedStyle(document.querySelector('.canvas-wrap')).backgroundColor);
+  check(wrap === 'rgb(7, 10, 20)', `dark: .canvas-wrap matches --canvas-bg, so there is no flash (${wrap})`);
+  if (has3D) {
+    await page.waitForTimeout(900);
+    check(await page.locator('#graph-canvas-3d').isVisible(), 'dark: 3D Context projection renders');
+  }
+  check(consoleErrors.length === 0, `dark: no console/page errors (${consoleErrors.slice(0, 3).join(' | ')})`);
+  await page.screenshot({ path: path.join(here, 'smoke-dark.png') });
   await page.close();
 }
 

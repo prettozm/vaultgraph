@@ -1,6 +1,7 @@
 // Query-parameter handling and interpretation of what the user typed.
 import { parseGitHubUrl } from './github.js';
 import { isAbsoluteHttpUrl } from './urls.js';
+import { LABEL_MODES, LAYER_MODES, DEFAULT_VISUAL } from './prefs.js';
 
 /**
  * Read the supported query parameters.
@@ -19,10 +20,28 @@ export function readParams(search) {
     preferred: manifest && manifest.trim() ? 'manifest' : repo && repo.trim() ? 'repo' : null,
     view: normalizeView(view),
     projection: projection && projection.trim() ? projection.trim().toLowerCase() : null,
+    labels: normalizeEnum(params.get('labels'), LABELS),
+    layers: normalizeEnum(params.get('layers'), LAYERS),
   };
 }
 
 const VIEWS = new Set(['2d', '3d']);
+const LABELS = new Set(LABEL_MODES);
+const LAYERS = new Set(LAYER_MODES);
+
+/** Accept only a known value; anything else is ignored rather than guessed. */
+function normalizeEnum(value, allowed) {
+  const v = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return allowed.has(v) ? v : null;
+}
+
+/** Public helpers for the two visual parameters carried in the URL (§23). */
+export function normalizeLabels(value) {
+  return normalizeEnum(value, LABELS);
+}
+export function normalizeLayers(value) {
+  return normalizeEnum(value, LAYERS);
+}
 
 /** Accept only the two known view modes; anything else is ignored. */
 export function normalizeView(value) {
@@ -68,11 +87,12 @@ export function classifyInput(text, baseUrl) {
 
 /**
  * Build the shareable/bookmarkable URL for a given target (CDC §23).
- * `view` and `projection` are appended only when they add information:
- * the 2D default and an absent projection stay out of the URL.
+ * `view`, `projection`, `labels` and `layers` are appended only when they add
+ * information: defaults (2D, auto labels, layered shelves) stay out of the URL.
+ * `layers` is 3D-only, so it is never written next to a 2D view.
  * @param {string} baseUrl
  * @param {object} target
- * @param {{view?:string|null, projection?:string|null}} [ui]
+ * @param {{view?:string|null, projection?:string|null, labels?:string|null, layers?:string|null}} [ui]
  */
 export function buildAppUrl(baseUrl, target, ui = {}) {
   const u = new URL(baseUrl);
@@ -89,5 +109,9 @@ export function buildAppUrl(baseUrl, target, ui = {}) {
     const projection = typeof ui.projection === 'string' ? ui.projection.trim().toLowerCase() : '';
     if (projection) u.searchParams.set('projection', projection);
   }
+  const labels = normalizeLabels(ui.labels);
+  if (labels && labels !== DEFAULT_VISUAL.labels) u.searchParams.set('labels', labels);
+  const layers = normalizeLayers(ui.layers);
+  if (view === '3d' && layers && layers !== DEFAULT_VISUAL.layers) u.searchParams.set('layers', layers);
   return u.toString();
 }

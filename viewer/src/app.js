@@ -27,7 +27,7 @@ import { createSimulation } from './lib/layout.js';
 import { blobUrl, apiRepoUrl } from './lib/github.js';
 import { makeAuthFetch } from './lib/auth-fetch.js';
 import { formatCount, formatDate, formatRelative, shortSha } from './lib/format.js';
-import { readPrefs, writePrefs, effectiveTheme } from './lib/prefs.js';
+import { readPrefs, writePrefs, effectiveTheme, resolveVisual, DEFAULT_VISUAL } from './lib/prefs.js';
 import { isTentative } from './lib/colors.js';
 
 // Fine-grained token for private repositories. Stored only in this browser;
@@ -111,9 +111,13 @@ const state = {
   quickNodeIds: null, // node whitelist installed by the Unresolved quick action (never a status filter)
   drawerOpen: false,
   inspectorOpen: false,
+  viewOptionsOpen: false,
   prefs: readPrefs(),
   loadToken: 0,
 };
+
+/** The only 3D projection whose colour channel carries the epistemic status. */
+const STATUS_COLOURED_PROJECTIONS = new Set(['epistemic']);
 
 function isMobile() {
   try {
@@ -136,6 +140,98 @@ function showScreen(name) {
 }
 
 // --------------------------------------------------------------------------
+// Visual options (v0.3) — one vocabulary, both renderers
+// --------------------------------------------------------------------------
+
+/** Stored options with `animation` resolved against prefers-reduced-motion. */
+function currentVisual() {
+  return resolveVisual(state.prefs.visual);
+}
+
+/**
+ * Hand the current options to both views. The renderers are Lot R's; every
+ * call is optional-chained so the app runs identically before they land.
+ */
+function pushVisualOptions() {
+  const options = { ...currentVisual(), theme: isDark() ? 'dark' : 'light' };
+  state.view?.setVisualOptions?.(options);
+  state.view3d?.setVisualOptions?.(options);
+}
+
+/** Reflect the options into every control that carries a `data-visual` key. */
+function renderVisualControls() {
+  const visual = currentVisual();
+  const in3d = state.mode === '3d';
+
+  for (const button of document.querySelectorAll('[data-visual]')) {
+    const key = button.dataset.visual;
+    const value = visual[key];
+    if (button.dataset.value !== undefined) {
+      button.setAttribute('aria-pressed', button.dataset.value === value ? 'true' : 'false');
+      // Layers only mean something in 3D; the control stays visible but inert.
+      if (key === 'layers') button.disabled = !in3d;
+    } else {
+      const on = value === true;
+      button.setAttribute('aria-checked', on ? 'true' : 'false');
+      const text = button.querySelector('[data-switch-text]');
+      if (text) text.textContent = on ? 'On' : 'Off';
+    }
+  }
+
+  const hint = $('#layers-hint');
+  if (hint) hint.hidden = in3d;
+  const quick = $('#layers-quick');
+  if (quick) quick.hidden = !in3d;
+}
+
+/** Change one or more options: persist, push to the renderers, reflect, share. */
+function setVisual(patch) {
+  state.prefs = writePrefs({ visual: patch });
+  pushVisualOptions();
+  renderVisualControls();
+  syncUrl();
+}
+
+function resetVisual() {
+  setVisual({ ...DEFAULT_VISUAL });
+}
+
+/**
+ * Anchor the popover under its button. It lives outside the (scrolling)
+ * toolbar so nothing clips it, which means its position is ours to set.
+ */
+function placeViewOptions() {
+  const popover = $('#view-options');
+  const button = $('#view-options-button');
+  if (!popover || !button) return;
+  if (isMobile()) {
+    // The stylesheet turns it into a bottom sheet: drop every inline override.
+    popover.style.top = '';
+    popover.style.right = '';
+    return;
+  }
+  const rect = button.getBoundingClientRect();
+  popover.style.top = `${Math.round(rect.bottom + 8)}px`;
+  popover.style.right = `${Math.max(8, Math.round(globalThis.innerWidth - rect.right))}px`;
+}
+
+function openViewOptions() {
+  state.viewOptionsOpen = true;
+  $('#view-options').hidden = false;
+  $('#view-backdrop').hidden = !isMobile();
+  $('#view-options-button').setAttribute('aria-expanded', 'true');
+  placeViewOptions();
+  renderVisualControls();
+}
+
+function closeViewOptions() {
+  state.viewOptionsOpen = false;
+  $('#view-options').hidden = true;
+  $('#view-backdrop').hidden = true;
+  $('#view-options-button').setAttribute('aria-expanded', 'false');
+}
+
+// --------------------------------------------------------------------------
 // Theme (§18)
 // --------------------------------------------------------------------------
 
@@ -153,6 +249,8 @@ function applyTheme() {
   }
   state.view?.setTheme?.();
   state.view3d?.setTheme?.();
+  // The renderers read the theme through the same options bag as the rest.
+  pushVisualOptions();
   return effective;
 }
 
@@ -383,6 +481,7 @@ function installGraph(payload, { keepUi = false } = {}) {
       onSelectEdge: (id) => selectEdge(id),
       onClearSelection: () => clearSelection(),
     });
+    pushVisualOptions();
   }
 
   showScreen('graph');
@@ -562,7 +661,18 @@ function renderAll() {
   renderStatsStrip(visibleNodeIds.size, visibleEdgeIds.size);
   renderFilterPanel();
   renderInspectorPanel();
-  renderLegend($('#legend'), { typeFacet: state.facets.type, statusFacet: state.facets.status, dark: isDark() });
+  renderLegend($('#legend'), {
+    typeFacet: state.facets.type,
+    statusFacet: state.facets.status,
+    dark: isDark(),
+    statusFirst: state.mode === '3d' && STATUS_COLOURED_PROJECTIONS.has(state.projection),
+    collapsed: state.prefs.legendOpen === false,
+    onToggle: (open) => {
+      state.prefs = writePrefs({ legendOpen: open });
+      renderAll();
+      resizeViews();
+    },
+  });
   renderWarnings($('#warnings'), [...(state.payload?.warnings ?? []), ...state.graph.issues]);
 }
 
@@ -792,6 +902,7 @@ async function ensure3D() {
       onViewChange: () => {},
     });
     if (state.graph) state.view3d.setData({ graph: state.graph, sim: state.sim, matches: state.matches });
+    pushVisualOptions();
   } catch (err) {
     state.view3dFailed = true;
     state.view3d = null;
@@ -832,6 +943,9 @@ async function setMode(mode, { persist = true } = {}) {
     state.view?.start?.();
     setGraphNote('');
   }
+  // Layers are a 3D affordance: the quick control and the popover row follow the mode.
+  renderVisualControls();
+  if (state.graph) renderAll();
   if (persist) {
     state.prefs = writePrefs({ view: state.mode, projection: state.projection });
     syncUrl();
@@ -885,6 +999,8 @@ function setProjection(id) {
   state.view3d?.setProjection?.(id);
   setGraphNote(projectionNote(id));
   state.prefs = writePrefs({ projection: id });
+  // A status-coloured projection changes what the legend has to say first.
+  if (state.graph) renderAll();
   syncUrl();
 }
 
@@ -894,8 +1010,18 @@ function setProjection(id) {
 
 function syncUrl() {
   if (!state.target) return;
+  const visual = currentVisual();
   try {
-    history.replaceState({}, '', buildAppUrl(location.href, state.target, { view: state.mode, projection: state.projection }));
+    history.replaceState(
+      {},
+      '',
+      buildAppUrl(location.href, state.target, {
+        view: state.mode,
+        projection: state.projection,
+        labels: visual.labels,
+        layers: visual.layers,
+      })
+    );
   } catch {
     /* file:// or restricted context — the app still works, just not bookmarkable */
   }
@@ -941,7 +1067,14 @@ async function bootFromLocation({ push = false } = {}) {
   const params = readParams(location.search);
   state.mode = params.view ?? state.prefs.view ?? '2d';
   state.projection = params.projection ?? state.prefs.projection ?? 'context';
+  // URL wins over the stored preference, for the visual options too (§23).
+  const fromUrl = {};
+  if (params.labels) fromUrl.labels = params.labels;
+  if (params.layers) fromUrl.layers = params.layers;
+  if (Object.keys(fromUrl).length) state.prefs = writePrefs({ visual: fromUrl });
   applyModeButtons(state.mode);
+  renderVisualControls();
+  pushVisualOptions();
   const target = targetFromParams(params);
   if (!target) {
     showScreen('home');
@@ -949,7 +1082,17 @@ async function bootFromLocation({ push = false } = {}) {
     $('#repo-input').focus();
     return;
   }
-  if (push) pushUrl(buildAppUrl(location.href, target, { view: state.mode, projection: state.projection }));
+  if (push) {
+    const visual = currentVisual();
+    pushUrl(
+      buildAppUrl(location.href, target, {
+        view: state.mode,
+        projection: state.projection,
+        labels: visual.labels,
+        layers: visual.layers,
+      })
+    );
+  }
   await load(target);
   if (state.graph && state.mode === '3d') await setMode('3d', { persist: false });
 }
@@ -995,6 +1138,28 @@ function wire() {
   $('#view-2d').addEventListener('click', () => setMode('2d'));
   $('#view-3d').addEventListener('click', () => setMode('3d'));
   $('#projection-select').addEventListener('change', (event) => setProjection(event.target.value));
+
+  // View settings: one delegated handler for every `data-visual` control, in
+  // the popover and in the 3D quick row alike.
+  for (const button of document.querySelectorAll('[data-visual]')) {
+    const key = button.dataset.visual;
+    button.addEventListener('click', () => {
+      if (button.dataset.value !== undefined) setVisual({ [key]: button.dataset.value });
+      else setVisual({ [key]: button.getAttribute('aria-checked') !== 'true' });
+    });
+  }
+  $('#view-options-button').addEventListener('click', () =>
+    state.viewOptionsOpen ? closeViewOptions() : openViewOptions()
+  );
+  $('#view-options-close').addEventListener('click', closeViewOptions);
+  $('#view-backdrop').addEventListener('click', closeViewOptions);
+  $('#view-options-reset').addEventListener('click', () => resetVisual());
+  document.addEventListener('click', (event) => {
+    if (!state.viewOptionsOpen || isMobile()) return;
+    if (!event.target.closest('#view-options') && !event.target.closest('#view-options-button')) {
+      closeViewOptions();
+    }
+  });
 
   $('#filters-button').addEventListener('click', () => (state.drawerOpen ? closeDrawer() : openDrawer()));
   $('#filters-close').addEventListener('click', closeDrawer);
@@ -1054,6 +1219,10 @@ function wire() {
   globalThis.addEventListener('popstate', () => bootFromLocation());
   globalThis.addEventListener('resize', () => {
     if (!state.drawerOpen) $('#drawer-backdrop').hidden = true;
+    if (state.viewOptionsOpen) {
+      $('#view-backdrop').hidden = !isMobile();
+      placeViewOptions();
+    }
   });
   try {
     globalThis.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
@@ -1069,6 +1238,11 @@ function wire() {
     if (event.key === 'Escape') {
       if (!$('#search-results').hidden) {
         $('#search-results').hidden = true;
+        return;
+      }
+      if (state.viewOptionsOpen) {
+        closeViewOptions();
+        $('#view-options-button').focus();
         return;
       }
       if (state.drawerOpen) {
@@ -1130,5 +1304,6 @@ async function copyInstallPrompt() {
 }
 
 applyTheme();
+renderVisualControls();
 wire();
 bootFromLocation();

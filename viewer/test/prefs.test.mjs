@@ -16,9 +16,18 @@ class HostileStorage {
   removeItem() { throw new Error('blocked'); }
 }
 
-const { readPrefs, writePrefs, clearPrefs, normalizePrefs, effectiveTheme, DEFAULT_PREFS } = await import(
-  '../src/lib/prefs.js'
-);
+const {
+  readPrefs,
+  writePrefs,
+  clearPrefs,
+  normalizePrefs,
+  normalizeVisual,
+  resolveVisual,
+  prefersReducedMotion,
+  effectiveTheme,
+  DEFAULT_PREFS,
+  DEFAULT_VISUAL,
+} = await import('../src/lib/prefs.js');
 
 function withStorage(storage, fn) {
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
@@ -41,9 +50,82 @@ test('preferences round-trip through storage', () => {
   withStorage(new MemoryStorage(), () => {
     writePrefs({ view: '3d', projection: 'time' });
     writePrefs({ theme: 'dark', lastRepo: 'foo/bar' });
-    assert.deepEqual(readPrefs(), { view: '3d', projection: 'time', theme: 'dark', lastRepo: 'foo/bar' });
+    assert.deepEqual(readPrefs(), {
+      view: '3d',
+      projection: 'time',
+      theme: 'dark',
+      lastRepo: 'foo/bar',
+      legendOpen: true,
+      visual: { ...DEFAULT_VISUAL },
+    });
     clearPrefs();
     assert.deepEqual(readPrefs(), DEFAULT_PREFS);
+  });
+});
+
+test('visual options merge field by field and survive a round-trip (v0.3)', () => {
+  withStorage(new MemoryStorage(), () => {
+    writePrefs({ visual: { glow: 'high' } });
+    writePrefs({ visual: { labels: 'all', edges: false } });
+    assert.deepEqual(readPrefs().visual, {
+      ...DEFAULT_VISUAL,
+      glow: 'high',
+      labels: 'all',
+      edges: false,
+    });
+    // The other preferences are untouched by a visual patch.
+    assert.equal(readPrefs().theme, 'system');
+    // Resetting to the defaults puts `animation` back to "unset".
+    writePrefs({ visual: { ...DEFAULT_VISUAL } });
+    assert.deepEqual(readPrefs().visual, DEFAULT_VISUAL);
+  });
+});
+
+test('normalizeVisual validates every enum and never throws', () => {
+  assert.deepEqual(normalizeVisual(null), DEFAULT_VISUAL);
+  assert.deepEqual(normalizeVisual('nonsense'), DEFAULT_VISUAL);
+  assert.deepEqual(normalizeVisual({ labels: 'ALL', glow: ' High ', layers: 'Flat', quality: 'LOW' }), {
+    animation: null,
+    labels: 'all',
+    edges: true,
+    glow: 'high',
+    layers: 'flat',
+    quality: 'low',
+  });
+  // Unknown values fall back to the default rather than being carried through.
+  assert.equal(normalizeVisual({ labels: 'enormous' }).labels, 'auto');
+  assert.equal(normalizeVisual({ glow: 42 }).glow, 'medium');
+  assert.equal(normalizeVisual({ edges: 'yes' }).edges, true);
+  assert.equal(normalizeVisual({ animation: 'yes' }).animation, null);
+  assert.equal(normalizeVisual({ animation: false }).animation, false);
+});
+
+test('the defaults are never shared: mutating a read cannot poison the next one', () => {
+  const first = normalizePrefs(null);
+  first.visual.glow = 'high';
+  assert.equal(normalizePrefs(null).visual.glow, 'medium');
+  assert.equal(DEFAULT_PREFS.visual.glow, 'medium');
+});
+
+test('an unset animation resolves against prefers-reduced-motion', () => {
+  const reduce = () => ({ matches: true });
+  const noReduce = () => ({ matches: false });
+  assert.equal(resolveVisual({}, reduce).animation, false);
+  assert.equal(resolveVisual({}, noReduce).animation, true);
+  // An explicit choice always wins over the system preference.
+  assert.equal(resolveVisual({ animation: true }, reduce).animation, true);
+  assert.equal(resolveVisual({ animation: false }, noReduce).animation, false);
+  // No matchMedia at all: motion stays on, nothing throws.
+  assert.equal(resolveVisual({}, undefined).animation, true);
+  assert.equal(prefersReducedMotion(() => { throw new Error('no matchMedia'); }), false);
+});
+
+test('a stored garbage visual block degrades to the defaults', () => {
+  const storage = new MemoryStorage();
+  storage.setItem('vault-graph.prefs.v1', JSON.stringify({ view: '3d', visual: { glow: 'nuclear', labels: 7 } }));
+  withStorage(storage, () => {
+    assert.deepEqual(readPrefs().visual, DEFAULT_VISUAL);
+    assert.equal(readPrefs().view, '3d');
   });
 });
 

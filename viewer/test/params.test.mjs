@@ -11,10 +11,29 @@ test('readParams reads both supported parameters', () => {
     preferred: 'repo',
     view: null,
     projection: null,
+    labels: null,
+    layers: null,
   });
-  const empty = { repo: null, manifest: null, preferred: null, view: null, projection: null };
+  const empty = {
+    repo: null,
+    manifest: null,
+    preferred: null,
+    view: null,
+    projection: null,
+    labels: null,
+    layers: null,
+  };
   assert.deepEqual(readParams(''), empty);
   assert.deepEqual(readParams('?repo=%20%20'), empty);
+});
+
+test('readParams reads the optional visual parameters (v0.3)', () => {
+  const params = readParams('?repo=foo/bar&view=3d&labels=ALL&layers=Expanded');
+  assert.equal(params.labels, 'all');
+  assert.equal(params.layers, 'expanded');
+  // Unknown values are ignored, never guessed.
+  assert.equal(readParams('?labels=huge').labels, null);
+  assert.equal(readParams('?layers=stacked').layers, null);
 });
 
 test('readParams reads the optional view and projection (CDC §23)', () => {
@@ -95,4 +114,19 @@ test('buildAppUrl prefers the short repo form and carries view/projection', () =
     buildAppUrl(BASE, { ...target, branch: 'trunk', value: 'https://github.com/foo/bar/tree/trunk' }),
     `${BASE}?repo=https%3A%2F%2Fgithub.com%2Ffoo%2Fbar%2Ftree%2Ftrunk`
   );
+});
+
+test('buildAppUrl carries labels and layers only when they add information (v0.3)', () => {
+  const target = { kind: 'repo', value: 'https://github.com/foo/bar', owner: 'foo', repo: 'bar', branch: null };
+  // Defaults never pollute the shared URL.
+  assert.equal(buildAppUrl(BASE, target, { labels: 'auto', layers: 'layered' }), `${BASE}?repo=foo%2Fbar`);
+  assert.equal(buildAppUrl(BASE, target, { labels: 'all' }), `${BASE}?repo=foo%2Fbar&labels=all`);
+  // Layers are a 3D affordance: they are never written next to a 2D view.
+  assert.equal(buildAppUrl(BASE, target, { view: '2d', layers: 'expanded' }), `${BASE}?repo=foo%2Fbar`);
+  assert.equal(
+    buildAppUrl(BASE, target, { view: '3d', projection: 'epistemic', labels: 'off', layers: 'expanded' }),
+    `${BASE}?repo=foo%2Fbar&view=3d&projection=epistemic&labels=off&layers=expanded`
+  );
+  // An unknown value is dropped rather than propagated.
+  assert.equal(buildAppUrl(BASE, target, { labels: 'enormous' }), `${BASE}?repo=foo%2Fbar`);
 });
