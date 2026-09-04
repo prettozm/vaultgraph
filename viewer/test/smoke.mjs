@@ -389,6 +389,7 @@ const storedVisual = (page) =>
     if (edge) {
       await page.touchscreen.tap(edge.point.x, edge.point.y);
       await page.waitForTimeout(350);
+      check((await page.evaluate(() => globalThis.__vaultGraph.selectedId())) === edge.id, `touch/${mode}: the selected edge is the tapped one (${edge.id})`);
       // Strict: the inspector must be showing *that relation*, not a node that
       // happens to list it among its own relations.
       const near = await page.evaluate(({ point }) => {

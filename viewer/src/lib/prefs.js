@@ -162,6 +162,6 @@ export function effectiveTheme(theme, matchMedia = globalThis.matchMedia) {
   try {
     return matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   } catch {
-    return 'light';
+    return 'dark'; // same fallback as the pre-paint bootstrap in index.html: the identity is night
   }
 }

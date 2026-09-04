@@ -162,5 +162,5 @@ test('effectiveTheme resolves system against the media query', () => {
   assert.equal(effectiveTheme('light'), 'light');
   assert.equal(effectiveTheme('system', () => ({ matches: true })), 'dark');
   assert.equal(effectiveTheme('system', () => ({ matches: false })), 'light');
-  assert.equal(effectiveTheme('system', () => { throw new Error('no matchMedia'); }), 'light');
+  assert.equal(effectiveTheme('system', () => { throw new Error('no matchMedia'); }), 'dark'); // same fallback as the pre-paint bootstrap
 });

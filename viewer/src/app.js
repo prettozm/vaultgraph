@@ -164,6 +164,7 @@ globalThis.__vaultGraph = {
   visibleEdgeIds: () => (state.graph ? [...currentVisibility()[1]] : []),
   /** The relation name the inspector would show for an edge. */
   relationOf: (id) => state.graph?.edgeById?.get(id)?.relation ?? null,
+  selectedId: () => state.selection?.id ?? null,
   /** The label the inspector would show for a node. */
   labelOf: (id) => state.graph?.nodeById?.get(id)?.label ?? null,
 };
