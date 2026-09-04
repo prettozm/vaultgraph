@@ -25,15 +25,21 @@ import {
 } from '../lib/camera3d.js';
 import { computeProjection } from '../lib/projections.js';
 import {
+  ANCHOR_COUNT,
+  DEPTH_JITTER,
   LAYER_SPREAD,
   MAX_LABELS,
+  coreRadiusPx,
   createParticles,
   defaultVisualOptions,
+  depthJitter,
   detectTheme,
+  drawCoreLight,
   drawHalo,
   driftOffset,
   easeToward,
   lerp,
+  makeNebulaCache,
   makeSpriteCache,
   mergeVisualOptions,
   paintBackground,
@@ -54,12 +60,24 @@ const EDGE_PICK_PX = 8;
 const MAX_PLANES = 24;
 const DOUBLE_TAP_MS = 320;
 const BASE_RADIUS = 5.6;    // world units for star class 1
-const DRIFT_PX = 2.2;       // ambient excursion, screen pixels
-const DIM_NODE = 0.28;
-const DIM_EDGE = 0.06;
+const DRIFT_PX = 3;         // ambient excursion, screen pixels
+const DIM_NODE = 0.22;
+const DIM_EDGE = 0.05;
 const SHAPE_MIN_PX = 3;
-const IDLE_YAW = 0.015;     // rad/s — one turn in ~7 minutes
-const IDLE_AFTER_MS = 4000;
+const EDGE_ALPHA = 0.12;    // constellation lines, night ground
+const EDGE_ALPHA_LIGHT = 0.18; // paper keeps its original ink
+const EDGE_FOCUS_ALPHA = 0.75;
+const IDLE_YAW = 0.01;      // rad/s — one turn in ~10 minutes
+const IDLE_PITCH_DEG = 1.5; // amplitude of the slow pitch breathing
+const IDLE_PITCH_PERIOD = 40; // seconds for one pitch cycle
+const IDLE_AFTER_MS = 6000; // motion resumes this long after the last gesture
+/** Layer-relative depth jitter, so a shelf is a thin cloud, not a sheet. */
+const LAYER_JITTER = DEPTH_JITTER;
+/** Shelf ink: the layers must read from their label and their grouping. */
+const PLANE_FILL_ALPHA = 0.012; // eight stacked shelves accumulate — keep each a whisper
+const PLANE_LINE_ALPHA = { layered: 0.16, expanded: 0.22, flat: 0.16 };
+// Paper does not bloom: the day theme keeps the pre-0.3.1 halo tightness.
+const PAPER_GLOW_SCALE = 0.42;
 
 // colors.js owns the shared vocabularies when it exposes them (Lot H added
 // statusColor / isTentative / shapeForType); these locals are the fallback so
@@ -121,10 +139,12 @@ export function createGraphView3D(canvas, handlers = {}) {
   let opts = defaultVisualOptions();
   let tokens = readCanvasTokens(opts.theme);
   const sprites = makeSpriteCache(300);
+  const nebula = makeNebulaCache();
   let quality = 'high';
   let particles = [];
   let particleSize = { width: 0, height: 0, count: -1 };
   let maxDegree = 1;
+  let anchors = new Set();
   let clock = 0;
   let lastTs = 0;
   let dimMix = 0;
@@ -161,7 +181,9 @@ export function createGraphView3D(canvas, handlers = {}) {
 
   function refreshQuality(width, height, dpr) {
     quality = qualityFor(opts, { nodeCount: data.visibleNodes?.size ?? 0, width, height, dpr });
-    const count = particleCountFor(quality);
+    // The dense sky is a night-theme effect: on paper the old sparse dust is
+    // the right amount of texture, so the day theme keeps its original density.
+    const count = Math.round(particleCountFor(quality) * (tokens.dark ? 1 : 0.18));
     if (
       particleSize.count !== count ||
       particleSize.width !== Math.round(width) ||
@@ -172,9 +194,20 @@ export function createGraphView3D(canvas, handlers = {}) {
     }
   }
 
+  /** Layer height for a node, plus a deterministic jitter *inside* its layer:
+   *  the shelf becomes a thin cloud, which is what makes the render read as a
+   *  constellation instead of as stacked glass. The layer itself is unchanged. */
   function zOf(id) {
     const raw = projection?.z?.get(id);
-    return (Number.isFinite(raw) ? raw : 0) * Z_SPREAD * zScale;
+    const base = Number.isFinite(raw) ? raw : 0;
+    const step = layerStep();
+    return (base * Z_SPREAD + depthJitter(id, LAYER_JITTER) * step * Z_SPREAD) * zScale;
+  }
+
+  /** Distance between two adjacent projection layers, in z ∈ [-1,1] units. */
+  function layerStep() {
+    const n = projection?.layers?.length ?? 0;
+    return n > 1 ? 2 / (n - 1) : 0.5;
   }
 
   /** World point for a body: the 2D layout spans X and depth (Z); the semantic layer value
@@ -201,10 +234,21 @@ export function createGraphView3D(canvas, handlers = {}) {
       }
     }
     maxDegree = Math.max(1, m);
+    anchors = new Set(
+      visibleBodies()
+        .slice()
+        .sort((a, b) => (b.degree || 0) - (a.degree || 0) || String(a.id).localeCompare(String(b.id)))
+        .slice(0, ANCHOR_COUNT)
+        .map((b) => b.id)
+    );
+  }
+
+  function bucketOf(body) {
+    return sizeBucket(body.degree || 0, maxDegree);
   }
 
   function radiusOf(body) {
-    return radiusFor(sizeBucket(body.degree || 0, maxDegree), BASE_RADIUS);
+    return radiusFor(bucketOf(body), BASE_RADIUS);
   }
 
   /** Project every visible body once per frame (with the ambient drift). */
@@ -234,17 +278,24 @@ export function createGraphView3D(canvas, handlers = {}) {
   }
 
   /**
-   * Star core colour. `cool` (0 near, 2 far) is the depth cue: distant stars
-   * lose saturation and lightness, so depth reads even before the size does.
+   * Star core colour. `cool` (0 near … 1 far) is the depth cue: distant stars
+   * drift further toward blue-white, so depth reads before the size does.
+   * Night uses the star tints (hue pushed toward cool white); day is unchanged.
    */
   function starColor(node, cool = 0) {
-    if (projection?.encoding?.colorBy === 'status') {
-      return statusColor(node.status, { dark: tokens.dark });
+    const byStatus = projection?.encoding?.colorBy === 'status';
+    if (!tokens.dark) {
+      return byStatus
+        ? statusColor(node.status, { dark: false })
+        : colorFor(node.type, { saturation: Math.max(28, 62 - cool * 26), lightness: 52 - cool * 14 });
     }
-    return colorFor(node.type, {
-      saturation: Math.max(28, 62 - cool * 13),
-      lightness: (tokens.dark ? 70 : 52) - cool * 7,
-    });
+    if (byStatus && typeof palette.statusTint === 'function') {
+      return palette.statusTint(node.status, { dark: true, cool });
+    }
+    if (byStatus) return statusColor(node.status, { dark: true });
+    return typeof palette.starTint === 'function'
+      ? palette.starTint(node.type, { dark: true, cool })
+      : colorFor(node.type, { saturation: 40, lightness: 78 });
   }
 
   function strokeFor(node) {
@@ -307,8 +358,12 @@ export function createGraphView3D(canvas, handlers = {}) {
     z0 -= padZ;
     z1 += padZ;
 
-    const fillAlpha = tokens.dark ? 0.05 : 0.06;
-    const strokeAlpha = tokens.dark ? 0.18 : 0.22;
+    // Shelves are scaffolding, not subject. On the night ground a translucent
+    // pane is the single loudest thing on screen, so the plane is almost gone:
+    // what carries the layer is its label and the vertical grouping of stars.
+    const fillAlpha = tokens.dark ? PLANE_FILL_ALPHA : 0.06;
+    const strokeAlpha = tokens.dark ? PLANE_LINE_ALPHA[opts.layers] ?? 0.16 : 0.22;
+    const nearEdgeOnly = tokens.dark;
 
     const shelves = flat
       ? [{ label: null, z: 0, count: 0 }]
@@ -335,9 +390,23 @@ export function createGraphView3D(canvas, handlers = {}) {
       ctx.closePath();
       ctx.fillStyle = tokens.planeColor(fillAlpha);
       ctx.fill();
-      ctx.strokeStyle = tokens.planeColor(strokeAlpha);
-      ctx.lineWidth = 1;
-      ctx.stroke();
+      if (nearEdgeOnly) {
+        // Only the near edge: one faint horizon line per layer, no glass box.
+        const near = corners.reduce((best, c) => (c.sy > best.sy ? c : best), corners[0]);
+        const other = corners
+          .filter((c) => c !== near)
+          .reduce((best, c) => (c.sy > best.sy ? c : best), corners.find((c) => c !== near));
+        ctx.beginPath();
+        ctx.moveTo(near.sx, near.sy);
+        ctx.lineTo(other.sx, other.sy);
+        ctx.strokeStyle = tokens.planeColor(strokeAlpha);
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      } else {
+        ctx.strokeStyle = tokens.planeColor(strokeAlpha);
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
       if (!layer.label) continue;
 
       const anchor = corners.reduce((best, c) => (c.sx < best.sx ? c : best), corners[0]);
@@ -353,6 +422,12 @@ export function createGraphView3D(canvas, handlers = {}) {
       ctx.strokeText(text, lx, ly);
       ctx.fillStyle = tokens.labelSoft;
       ctx.fillText(text, lx, ly);
+      // A small glowing dot pins the label to its layer now that the pane is
+      // nearly invisible: the shelf is gone, the anchor for the eye is not.
+      ctx.beginPath();
+      ctx.arc(lx + 4.5, ly, 2, 0, Math.PI * 2);
+      ctx.fillStyle = tokens.planeColor(0.75);
+      ctx.fill();
     }
 
     if (flat) {
@@ -405,7 +480,8 @@ export function createGraphView3D(canvas, handlers = {}) {
       tSeconds: clock,
       quality,
       animation: opts.animation,
-      parallax: { x: -cam.yaw * 26, y: cam.pitch * 26 },
+      nebula,
+      parallax: { x: -cam.yaw * 40, y: cam.pitch * 40 },
     });
     if (!data.graph || !data.sim) return;
     if (!projection) recomputeProjection();
@@ -432,8 +508,9 @@ export function createGraphView3D(canvas, handlers = {}) {
       far = 2;
     }
     const span = Math.max(far - near, 1);
-    const cue = (depth) => 1 - 0.65 * Math.min(Math.max((depth - near) / span, 0), 1); // 1 near → 0.35 far
-    const coolness = (depth) => Math.round(2 * Math.min(Math.max((depth - near) / span, 0), 1));
+    // Depth fog: a far star is dimmer (×0.55) and cooler; a near one is full.
+    const cue = (depth) => 1 - 0.45 * Math.min(Math.max((depth - near) / span, 0), 1); // 1 near → 0.55 far
+    const coolness = (depth) => Math.min(Math.max((depth - near) / span, 0), 1);
 
     const selectedNodeId = selection?.kind === 'node' ? selection.id : null;
     const selectedEdgeId = selection?.kind === 'edge' ? selection.id : null;
@@ -490,17 +567,18 @@ export function createGraphView3D(canvas, handlers = {}) {
 
     const additive = tokens.dark && quality !== 'low';
     if (additive) ctx.globalCompositeOperation = 'lighter';
-    strokeBatch(plain.normal, tokens.edge(0.18), 0.8);
-    strokeBatch(plain.dim, tokens.edge(lerp(0.18, DIM_EDGE, dimMix)), 0.8);
+    const edgeAlpha = tokens.dark ? EDGE_ALPHA : EDGE_ALPHA_LIGHT;
+    strokeBatch(plain.normal, tokens.edge(edgeAlpha), tokens.dark ? 1 : 0.8);
+    strokeBatch(plain.dim, tokens.edge(lerp(edgeAlpha, DIM_EDGE, dimMix)), tokens.dark ? 1 : 0.8);
     if (additive) ctx.globalCompositeOperation = 'source-over';
     for (const [status, list] of dashed.normal) {
-      strokeBatch(list, statusColor(status, { dark: tokens.dark, alpha: 0.5 }), 0.9, [5, 4]);
+      strokeBatch(list, statusColor(status, { dark: tokens.dark, alpha: tokens.dark ? 0.4 : 0.5 }), 0.9, [5, 4]);
     }
-    strokeBatch(dashed.dim, tokens.edge(lerp(0.18, DIM_EDGE, dimMix)), 0.9, [5, 4]);
+    strokeBatch(dashed.dim, tokens.edge(lerp(edgeAlpha, DIM_EDGE, dimMix)), 0.9, [5, 4]);
     if (focused.length) {
-      if (quality === 'high') strokeBatch(focused, tokens.edgeFocusColor(0.15), 4);
-      strokeBatch(focused.filter((s) => !s.soft), tokens.edgeFocusColor(0.85), 1.4);
-      strokeBatch(focused.filter((s) => s.soft), tokens.edgeFocusColor(0.7), 1.2, [5, 4]);
+      if (quality === 'high') strokeBatch(focused, tokens.edgeFocusColor(0.18), 3.5);
+      strokeBatch(focused.filter((s) => !s.soft), tokens.edgeFocusColor(EDGE_FOCUS_ALPHA), 1.4);
+      strokeBatch(focused.filter((s) => s.soft), tokens.edgeFocusColor(EDGE_FOCUS_ALPHA * 0.85), 1.2, [5, 4]);
     }
     if (selectedEdge) {
       if (quality === 'high') strokeBatch([selectedEdge], tokens.glowColor(0.18), 5);
@@ -509,7 +587,9 @@ export function createGraphView3D(canvas, handlers = {}) {
 
     // --- nodes, furthest first --------------------------------------------
     const nodeDraws = projected.slice().sort((p, q) => q.depth - p.depth);
-    const radiusPx = (p) => Math.max(2.2, radiusOf(p.body) * p.scale * 0.9);
+    // 3–8 px by degree class at unit perspective scale; radius also shrinks
+    // with distance, so size carries both the degree and the depth.
+    const radiusPx = (p) => coreRadiusPx(bucketOf(p.body), p.scale);
 
     if (opts.glow !== 'off') {
       if (additive) ctx.globalCompositeOperation = 'lighter';
@@ -523,9 +603,14 @@ export function createGraphView3D(canvas, handlers = {}) {
         const tw = quality === 'low' ? 1 : twinkle(p.body.id, clock, animate);
         const intensity =
           depthAlpha * (dim ? lerp(1, DIM_NODE, dimMix) : 1) * tw * (emphasised ? 1.35 : 1);
-        drawHalo(ctx, sprites, starColor(node, coolness(p.depth)), p.sx, p.sy, radiusPx(p), opts.glow, intensity, quality);
+        const tint = starColor(node, coolness(p.depth));
+        const r = radiusPx(p);
+        if (anchors.has(p.body.id) && quality !== 'low' && tokens.dark) {
+          drawHalo(ctx, sprites, tint, p.sx, p.sy, r, 'anchor', intensity, quality);
+        }
+        drawHalo(ctx, sprites, tint, p.sx, p.sy, tokens.dark ? r : r * PAPER_GLOW_SCALE, opts.glow, intensity, quality);
         if (isSelected) {
-          drawHalo(ctx, sprites, tokens.glowColor(1), p.sx, p.sy, radiusPx(p) * 1.5, 'high', 0.9 * tw, quality);
+          drawHalo(ctx, sprites, tokens.glowColor(1), p.sx, p.sy, r, 'select', 0.95 * tw, quality);
         }
       }
       if (additive) ctx.globalCompositeOperation = 'source-over';
@@ -548,7 +633,9 @@ export function createGraphView3D(canvas, handlers = {}) {
       nodePath(p.sx, p.sy, r, drawShape ? shapeFor(node.type) : 'circle');
       ctx.fillStyle = starColor(node, coolness(p.depth));
       ctx.fill();
-      if (r >= 2.6) {
+      if (tokens.dark) {
+        drawCoreLight(ctx, p.sx, p.sy, r, emphasised ? 1 : 0.82);
+      } else if (r >= 2.6) {
         ctx.lineWidth = 1.1;
         ctx.strokeStyle = strokeFor(node);
         ctx.stroke();
@@ -688,11 +775,18 @@ export function createGraphView3D(canvas, handlers = {}) {
     if (opts.animation) {
       dimMix = easeToward(dimMix, dimTarget(), dt, 250);
       zScale = easeToward(zScale, zTarget(), dt, 500);
-      // Idle orbit: ambient life only — it yields instantly to the pointer and
-      // never runs while a node is selected (the reader is reading, not touring).
+      // Idle orbit: ambient life only. It yields instantly to the pointer and
+      // resumes IDLE_AFTER_MS after the last gesture. A selection no longer
+      // stops it — `orbit` turns around the *current target*, which is the
+      // selected node, so the reader keeps their subject framed while the sky
+      // moves around it. Pitch breathes ±1.5° over 40 s so the motion never
+      // reads as a turntable.
       const idleFor = Date.now() - lastInteractionAt;
-      if (!interacting && !selection && idleFor > IDLE_AFTER_MS) {
-        cam = orbit(cam, IDLE_YAW * dt, 0);
+      if (!interacting && idleFor > IDLE_AFTER_MS) {
+        const amp = (IDLE_PITCH_DEG * Math.PI) / 180;
+        const w = (Math.PI * 2) / IDLE_PITCH_PERIOD;
+        const dPitch = amp * w * Math.cos(w * clock) * dt;
+        cam = orbit(cam, IDLE_YAW * dt, dPitch);
       }
     } else {
       dimMix = dimTarget();

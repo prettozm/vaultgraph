@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1 — constellation pass (2026-09-04)
+
+Night rendering reworked after review: deeper ground with soft nebula haze and a stronger vignette,
+a dense parallax starfield (120 / 350 / 800 stars by quality tier, log-distributed brightness, three
+depth bands), node stars with white-hot cores and 5–7× blooms, four brighter anchor stars, pastel
+type tints (`starTint`, hue blended toward cool white, pairwise distinguishability tested), constellation
+edges fading toward their midpoint, per-node depth jitter inside a layer, shelves reduced to a faint
+horizon line with a glowing label dot, continuous slow orbit in 3D that pauses on interaction and
+resumes after 6 s. Legend swatches use the same tint as the canvas. Day theme unchanged in intent.
+Tunable constants are listed at the top of `viewer/src/ui/starfield.js`.
+
 ## 0.3.0 — viewer: living-constellation identity (2026-09-04)
 
 Visual redesign of both canvases; the `.vault-graph` protocol is untouched.

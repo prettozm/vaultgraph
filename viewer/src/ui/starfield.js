@@ -58,16 +58,37 @@ export function driftOffset(id, tSeconds, amplitude = 2.5, enabled = true) {
   return { dx, dy };
 }
 
+/** Peak twinkle excursion, as a fraction of the star's nominal brightness. */
+export const TWINKLE_AMPLITUDE = 0.1;
+
+/** Default per-node depth jitter, as a fraction of the layer spacing (3D). */
+export const DEPTH_JITTER = 0.12;
+
 /**
- * Gentle intensity factor for one star, period 3–6 s.
- * @returns {number} in [0.92, 1.08]; exactly 1 when `enabled` is false.
+ * Gentle intensity factor for one star, period 4–9 s.
+ * @returns {number} in [0.90, 1.10]; exactly 1 when `enabled` is false.
  */
 export function twinkle(id, tSeconds, enabled = true) {
   if (!enabled) return 1;
   const t = finite(tSeconds, 0);
   const h = hash01(id);
-  const period = 3 + h * 3; // 3 … 6 s
-  return 1 + 0.08 * Math.sin((TAU * t) / period + h * TAU);
+  const period = 4 + h * 5; // 4 … 9 s
+  return 1 + TWINKLE_AMPLITUDE * Math.sin((TAU * t) / period + h * TAU);
+}
+
+/**
+ * Deterministic depth jitter inside a projection layer (3D). A layer becomes a
+ * thin *cloud* of stars instead of a flat sheet — most of what makes the render
+ * read as space rather than as a stacked chart. Purely presentational: which
+ * layer a node belongs to never changes, only where inside it the star sits.
+ *
+ * @param {string} id node id
+ * @param {number} [spread=DEPTH_JITTER] max excursion, in layer-spacing units
+ * @returns {number} in [-spread, +spread]
+ */
+export function depthJitter(id, spread = DEPTH_JITTER) {
+  const s = finite(spread, DEPTH_JITTER);
+  return (hash01(`${id}~depth`) * 2 - 1) * s;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,13 +118,35 @@ export function sizeBucket(degree, maxDegree) {
 }
 
 /** Core radius multipliers per star class (bucket 0 → 3). */
-export const BUCKET_SCALE = Object.freeze([0.85, 1.2, 1.6, 2.15]);
+export const BUCKET_SCALE = Object.freeze([0.62, 1, 1.5, 2.1]);
 
 /** Core radius for a star class, in whatever unit `base` is expressed. */
 export function radiusFor(bucket, base = 5) {
   const b = clamp(Math.round(finite(bucket, 0)), 0, 3);
   return finite(base, 5) * BUCKET_SCALE[b];
 }
+
+/**
+ * Nominal on-screen core radius per star class, in CSS pixels, at zoom 1.
+ * The spread between a leaf and a hub is deliberately wide: on a night ground
+ * size is the first thing the eye reads, so it has to carry the degree class
+ * before brightness or colour do.
+ */
+export const CORE_PX = Object.freeze([2.9, 4.3, 6.4, 9]);
+
+/**
+ * Screen core radius for a star class. Zoom (or perspective scale) is applied
+ * on a square root, so zooming in never turns hubs into blobs and zooming out
+ * never collapses the whole sky into identical specks.
+ */
+export function coreRadiusPx(bucket, zoom = 1) {
+  const b = clamp(Math.round(finite(bucket, 0)), 0, 3);
+  const z = clamp(Math.sqrt(Math.max(finite(zoom, 1), 0)), 0.72, 2.6);
+  return CORE_PX[b] * z;
+}
+
+/** How many of the highest-degree stars get the extra wide anchor bloom. */
+export const ANCHOR_COUNT = 4;
 
 // ---------------------------------------------------------------------------
 // Quality
@@ -124,18 +167,37 @@ export function qualityFor(options = {}, context = {}) {
   return 'high';
 }
 
-/** Background particle count for a resolved quality. */
+/**
+ * Background star count for a resolved quality. These are *sky*, not data:
+ * a real cloud of points is what separates "deep space" from "dark chart", so
+ * even the low tier keeps a thin field (it is one batched path per brightness
+ * band — a few hundred sub-pixel arcs, not a few hundred draw calls).
+ */
 export function particleCountFor(quality) {
-  if (quality === 'low') return 0;
-  if (quality === 'medium') return 75;
-  return 140;
+  if (quality === 'low') return 120;
+  if (quality === 'medium') return 350;
+  return 800;
 }
 
-/** Halo alpha per glow level; 'off' means no halo at all. */
-export const GLOW_ALPHA = Object.freeze({ off: 0, low: 0.25, medium: 0.45, high: 0.65 });
+/** Bloom alpha per glow level; 'off' means no bloom at all. */
+export const GLOW_ALPHA = Object.freeze({
+  off: 0,
+  low: 0.35,
+  medium: 0.55,
+  high: 0.75,
+  select: 0.5, // warm selection bloom (not user-selectable)
+  anchor: 0.24, // the wide faint halo of the few brightest stars
+});
 
-/** Halo radius as a multiple of the core radius, per glow level. */
-export const GLOW_SPREAD = Object.freeze({ off: 0, low: 2.2, medium: 2.6, high: 3 });
+/** Bloom radius as a multiple of the core radius, per glow level. */
+export const GLOW_SPREAD = Object.freeze({
+  off: 0,
+  low: 5,
+  medium: 6,
+  high: 7,
+  select: 8,
+  anchor: 11,
+});
 
 // ---------------------------------------------------------------------------
 // Visual options
@@ -202,10 +264,32 @@ export function mergeVisualOptions(current, partial = {}) {
 // Background particles
 // ---------------------------------------------------------------------------
 
+/** Number of brightness bands the background sky is batched into. */
+export const STAR_BANDS = 4;
+
+/** Alpha drawn for each brightness band (band 0 = faintest). */
+export const BAND_ALPHA = Object.freeze([0.08, 0.15, 0.24, 0.34]);
+
+/** Fraction of background stars that get a tiny soft glow. */
+export const GLOW_STAR_RATIO = 0.06;
+
+/** Parallax speed of the three depth bands, slowest (far) first. */
+export const PARALLAX_BANDS = Object.freeze([0.28, 0.6, 1]);
+
 /**
- * Deterministic sparse dust field. Same (count, w, h, seed) → same layout, so
- * a resize or a redraw never reshuffles the sky.
- * @returns {Array<{x:number,y:number,r:number,alpha:number,bucket:number,phase:number,speed:number,depth:number}>}
+ * Deterministic star field. Same (count, w, h, seed) → same sky, so a resize or
+ * a redraw never reshuffles it.
+ *
+ * Brightness follows a log-ish law (`rand()^2.4`): a great many faint pinpricks,
+ * a handful of bright ones. A uniform distribution is exactly what makes a
+ * generated sky look generated — every point the same weight, no structure for
+ * the eye to latch onto.
+ *
+ * `band` (0…3) batches the draw by brightness; `depth` (0…2) is the parallax
+ * layer; `glow` marks the ~6 % that earn a soft bloom.
+ *
+ * @returns {Array<{x:number,y:number,r:number,alpha:number,band:number,bucket:number,
+ *                  phase:number,speed:number,depth:number,parallax:number,glow:boolean}>}
  */
 export function createParticles(count, width, height, seed = 'starfield') {
   const n = Math.max(0, Math.round(finite(count, 0)));
@@ -214,16 +298,24 @@ export function createParticles(count, width, height, seed = 'starfield') {
   const rand = mulberry32(hashString(`${seed}:${n}`));
   const out = [];
   for (let i = 0; i < n; i += 1) {
-    const alpha = 0.08 + rand() * 0.27; // ≤ 0.35 — dust, never a second graph
+    const x = rand() * w;
+    const y = rand() * h;
+    // ^3 ⇒ ~63 % of the sky in the faintest band, ~9 % in the brightest.
+    const mag = rand() ** 3;
+    const band = Math.min(STAR_BANDS - 1, Math.floor(mag * STAR_BANDS));
+    const depth = Math.min(2, Math.floor(rand() * 3));
     out.push({
-      x: rand() * w,
-      y: rand() * h,
-      r: 0.6 + rand() * 1.0, // 0.6 … 1.6 px
-      alpha,
-      bucket: alpha < 0.17 ? 0 : alpha < 0.26 ? 1 : 2,
+      x,
+      y,
+      r: 0.4 + mag * 1.2, // 0.4 … 1.6 px — bright stars are also the bigger ones
+      alpha: BAND_ALPHA[band],
+      band,
+      bucket: Math.min(2, band), // legacy alias: three-bucket callers still work
       phase: rand() * TAU,
-      speed: 0.012 + rand() * 0.03, // rad/s — one lazy oscillation per ~3 min
-      depth: 0.25 + rand() * 0.75, // parallax weight
+      speed: 0.006 + rand() * 0.016, // rad/s — one lazy oscillation per ~5 min
+      depth,
+      parallax: PARALLAX_BANDS[depth],
+      glow: rand() < GLOW_STAR_RATIO,
     });
   }
   return out;
@@ -235,10 +327,10 @@ export function createParticles(count, width, height, seed = 'starfield') {
 
 const TOKENS = {
   dark: {
-    bgTop: '#0b1020',
+    bgTop: '#0a1020',
     bgBottom: '#04060c',
-    vignette: 'rgba(0,0,0,0.55)',
-    particle: '170, 190, 230',
+    vignette: 'rgba(0,0,0,0.65)',
+    particle: '205, 220, 255',
     edge: '120, 130, 145',
     edgeFocus: '210, 225, 255',
     label: '#e6ecf7',
@@ -314,14 +406,77 @@ export function readCanvasTokens(theme, root = globalThis.document?.documentElem
   };
 }
 
+// --- nebula haze -----------------------------------------------------------
+
+/** The three haze blobs, as fractions of the canvas: x, y, radius, alpha. */
+export const NEBULA_BLOBS = Object.freeze([
+  Object.freeze({ x: 0.22, y: 0.28, r: 0.85, alpha: 0.07, rgb: '70, 110, 205' }),
+  Object.freeze({ x: 0.8, y: 0.64, r: 0.75, alpha: 0.055, rgb: '95, 80, 195' }),
+  Object.freeze({ x: 0.5, y: 0.92, r: 0.68, alpha: 0.045, rgb: '50, 135, 195' }),
+]);
+
 /**
- * Deep-space ground: vertical gradient, soft vignette, sparse drifting dust.
- * Fills the whole canvas, so it also replaces the old `clearRect`.
+ * Three very large, very soft radial blobs baked once into an offscreen canvas.
+ * They are what gives the ground *volume* — a flat gradient reads as a panel,
+ * a hazy one reads as depth — and re-baking only on resize keeps them free:
+ * per frame this costs exactly one `drawImage`.
+ */
+export function makeNebulaCache() {
+  let cached = null; // { canvas, width, height, key }
+  return {
+    clear() {
+      cached = null;
+    },
+    /** @returns {?{canvas:*, width:number, height:number}} */
+    get(width, height, key = 'dark') {
+      const w = Math.max(1, Math.round(width));
+      const h = Math.max(1, Math.round(height));
+      if (cached && cached.width === w && cached.height === h && cached.key === key) return cached;
+      const canvas = makeOffscreen(1);
+      if (!canvas) return null;
+      canvas.width = w;
+      canvas.height = h;
+      const g = canvas.getContext('2d');
+      if (!g) return null;
+      const span = Math.max(w, h);
+      for (const blob of NEBULA_BLOBS) {
+        const cx = blob.x * w;
+        const cy = blob.y * h;
+        const r = blob.r * span;
+        const grad = g.createRadialGradient(cx, cy, 0, cx, cy, r);
+        grad.addColorStop(0, `rgba(${blob.rgb}, ${blob.alpha})`);
+        grad.addColorStop(0.55, `rgba(${blob.rgb}, ${(blob.alpha * 0.38).toFixed(4)})`);
+        grad.addColorStop(1, `rgba(${blob.rgb}, 0)`);
+        g.fillStyle = grad;
+        g.fillRect(0, 0, w, h);
+      }
+      cached = { canvas, width: w, height: h, key };
+      return cached;
+    },
+  };
+}
+
+/**
+ * Deep-space ground: vertical gradient, cached nebula haze, a strong vignette
+ * and the parallaxed star field. Fills the whole canvas, so it also replaces
+ * the old `clearRect`.
+ *
+ * @param {object} options
+ *   `particles` the field from `createParticles`; `parallax` {x,y} in px at
+ *   depth band 1 (each band scales it by `PARALLAX_BANDS`); `nebula` a cache
+ *   from `makeNebulaCache` (night theme only).
  */
 export function paintBackground(ctx, width, height, tokens, options = {}) {
   const w = Math.max(1, width);
   const h = Math.max(1, height);
-  const { particles = null, tSeconds = 0, quality = 'high', parallax = null, animation = true } = options;
+  const {
+    particles = null,
+    tSeconds = 0,
+    quality = 'high',
+    parallax = null,
+    animation = true,
+    nebula = null,
+  } = options;
 
   const grad = ctx.createLinearGradient(0, 0, 0, h);
   grad.addColorStop(0, tokens.bgTop);
@@ -329,36 +484,69 @@ export function paintBackground(ctx, width, height, tokens, options = {}) {
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, w, h);
 
-  const vignette = ctx.createRadialGradient(w / 2, h * 0.46, Math.min(w, h) * 0.12, w / 2, h * 0.5, Math.max(w, h) * 0.78);
+  if (tokens.dark && nebula) {
+    const baked = nebula.get(w, h, 'dark');
+    if (baked) ctx.drawImage(baked.canvas, 0, 0, w, h);
+  }
+
+  const vignette = ctx.createRadialGradient(w / 2, h * 0.46, Math.min(w, h) * 0.1, w / 2, h * 0.5, Math.max(w, h) * 0.74);
   vignette.addColorStop(0, 'rgba(0,0,0,0)');
+  vignette.addColorStop(0.55, 'rgba(0,0,0,0)');
   vignette.addColorStop(1, tokens.vignette);
   ctx.fillStyle = vignette;
   ctx.fillRect(0, 0, w, h);
 
-  if (quality === 'low' || !particles || !particles.length) return;
+  if (!particles || !particles.length) return;
   const t = animation ? tSeconds : 0;
   const px = parallax?.x ?? 0;
   const py = parallax?.y ?? 0;
-  // Batched by alpha bucket: three paths, three fills — no per-particle state.
-  for (let bucket = 0; bucket < 3; bucket += 1) {
+  // Screen position of one star: its own extremely slow oscillation plus the
+  // parallax of its depth band. Computed inline so the batching below stays
+  // one path per brightness band — no per-star state, no per-star fillStyle.
+  const at = (p) => {
+    const wobble = animation ? 6 * p.parallax : 0;
+    const dx = Math.sin(t * p.speed + p.phase) * wobble + px * p.parallax;
+    const dy = Math.cos(t * p.speed * 0.83 + p.phase) * wobble * 0.7 + py * p.parallax;
+    let x = (p.x + dx) % w;
+    if (x < 0) x += w;
+    let y = (p.y + dy) % h;
+    if (y < 0) y += h;
+    return { x, y };
+  };
+
+  const additive = tokens.dark;
+  if (additive) ctx.globalCompositeOperation = 'lighter';
+  for (let band = 0; band < STAR_BANDS; band += 1) {
     let any = false;
     ctx.beginPath();
     for (const p of particles) {
-      if (p.bucket !== bucket) continue;
-      const dx = Math.sin(t * p.speed + p.phase) * 9 + px * p.depth;
-      const dy = Math.cos(t * p.speed * 0.83 + p.phase) * 6 + py * p.depth;
-      let x = (p.x + dx) % w;
-      if (x < 0) x += w;
-      let y = (p.y + dy) % h;
-      if (y < 0) y += h;
+      if (p.band !== band) continue;
+      const { x, y } = at(p);
       ctx.moveTo(x + p.r, y);
       ctx.arc(x, y, p.r, 0, TAU);
       any = true;
     }
     if (!any) continue;
-    ctx.fillStyle = tokens.particleColor(bucket === 0 ? 0.13 : bucket === 1 ? 0.22 : 0.33);
+    ctx.fillStyle = tokens.particleColor(BAND_ALPHA[band] ?? 0.2);
     ctx.fill();
   }
+  // The ~6 % with a bloom: one extra path, drawn as slightly larger soft discs.
+  if (quality !== 'low') {
+    let any = false;
+    ctx.beginPath();
+    for (const p of particles) {
+      if (!p.glow) continue;
+      const { x, y } = at(p);
+      ctx.moveTo(x + p.r * 3.2, y);
+      ctx.arc(x, y, p.r * 3.2, 0, TAU);
+      any = true;
+    }
+    if (any) {
+      ctx.fillStyle = tokens.particleColor(0.07);
+      ctx.fill();
+    }
+  }
+  if (additive) ctx.globalCompositeOperation = 'source-over';
 }
 
 // ---------------------------------------------------------------------------
@@ -414,9 +602,14 @@ export function makeSpriteCache(limit = 300) {
       const g = canvas.getContext('2d');
       if (!g) return null;
       const c = (size * SPRITE_SS) / 2;
-      const grad = g.createRadialGradient(c, c, Math.max(r * 0.2 * SPRITE_SS, 0.5), c, c, halo * SPRITE_SS);
+      // A wide bloom needs a *fast* falloff or it reads as a flat translucent
+      // disc. Four stops approximate an inverse-square glow: bright pinpoint,
+      // steep shoulder, long faint tail that dissolves into the ground.
+      const grad = g.createRadialGradient(c, c, Math.max(r * 0.12 * SPRITE_SS, 0.5), c, c, halo * SPRITE_SS);
       grad.addColorStop(0, `rgba(255,255,255,${alpha})`);
-      grad.addColorStop(0.42, `rgba(255,255,255,${(alpha * 0.4).toFixed(3)})`);
+      grad.addColorStop(0.12, `rgba(255,255,255,${(alpha * 0.7).toFixed(3)})`);
+      grad.addColorStop(0.3, `rgba(255,255,255,${(alpha * 0.26).toFixed(3)})`);
+      grad.addColorStop(0.62, `rgba(255,255,255,${(alpha * 0.06).toFixed(3)})`);
       grad.addColorStop(1, 'rgba(255,255,255,0)');
       g.fillStyle = grad;
       g.fillRect(0, 0, size * SPRITE_SS, size * SPRITE_SS);
@@ -445,9 +638,9 @@ export function drawHalo(ctx, cache, colorCss, x, y, radiusPx, glowLevel, intens
   if (alpha <= 0.01) return;
   const spread = GLOW_SPREAD[glowLevel] ?? GLOW_SPREAD.medium;
   if (quality === 'low' || !cache) {
-    ctx.globalAlpha = alpha * 0.6;
+    ctx.globalAlpha = alpha * 0.45;
     ctx.beginPath();
-    ctx.arc(x, y, radiusPx * spread * 0.7, 0, TAU);
+    ctx.arc(x, y, radiusPx * spread * 0.42, 0, TAU);
     ctx.fillStyle = colorCss;
     ctx.fill();
     ctx.globalAlpha = 1;
@@ -458,6 +651,26 @@ export function drawHalo(ctx, cache, colorCss, x, y, radiusPx, glowLevel, intens
   ctx.globalAlpha = clamp(intensity, 0, 1.6) > 1 ? 1 : clamp(intensity, 0, 1);
   ctx.drawImage(sprite.canvas, x - sprite.half, y - sprite.half, sprite.size, sprite.size);
   ctx.globalAlpha = 1;
+}
+
+/** White-hot core: colour and radius ratio of the pinpoint inside a star. */
+export const CORE_WHITE = 'rgba(255, 255, 255, 0.85)';
+export const CORE_WHITE_RATIO = 0.46;
+
+/**
+ * The white-hot centre that turns a coloured dot into a star: the shape is
+ * already filled with the type tint, this lays a small white pinpoint over it
+ * so the rim keeps the hue and the middle burns out. Skipped below ~2.4 px,
+ * where it would simply erase the tint.
+ */
+export function drawCoreLight(ctx, x, y, radiusPx, intensity = 1) {
+  if (!(radiusPx >= 2.4)) return;
+  const a = clamp(0.85 * clamp(intensity, 0, 1.2), 0, 1);
+  if (a <= 0.02) return;
+  ctx.beginPath();
+  ctx.arc(x, y, radiusPx * CORE_WHITE_RATIO, 0, TAU);
+  ctx.fillStyle = `rgba(255, 255, 255, ${a.toFixed(3)})`;
+  ctx.fill();
 }
 
 /** Linear interpolation used by the dim / layer easings. */

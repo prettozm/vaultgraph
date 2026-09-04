@@ -8,16 +8,20 @@
 // Rendering is done in **screen space** (positions projected once per frame)
 // so halo sprites, line widths and label metrics are all expressed in CSS
 // pixels and stay crisp at every zoom level.
-import { colorFor, inkFor, statusColor, shapeForType, isTentative } from '../lib/colors.js';
+import { colorFor, inkFor, statusColor, starTint, shapeForType, isTentative } from '../lib/colors.js';
 import { boundsOf } from '../lib/layout.js';
 import {
+  ANCHOR_COUNT,
   MAX_LABELS,
+  coreRadiusPx,
   createParticles,
   defaultVisualOptions,
+  drawCoreLight,
   drawHalo,
   driftOffset,
   easeToward,
   lerp,
+  makeNebulaCache,
   makeSpriteCache,
   mergeVisualOptions,
   paintBackground,
@@ -34,10 +38,22 @@ const MIN_SCALE = 0.08;
 const MAX_SCALE = 8;
 const LABEL_ALWAYS_MAX = 40; // never label every node beyond this many (§16)
 const BASE_RADIUS = 5.6;     // world units for star class 1 (see radiusFor)
-const DRIFT_PX = 2.5;        // ambient excursion, screen pixels
-const DIM_NODE = 0.28;       // "outside the focus" — dimmed, never removed
-const DIM_EDGE = 0.06;
+const DRIFT_PX = 3;          // ambient excursion, screen pixels
+const DIM_NODE = 0.22;       // "outside the focus" — dimmed, never removed
+const DIM_EDGE = 0.05;
 const SHAPE_MIN_PX = 3;      // below this the shape is unreadable → round dot
+const EDGE_ALPHA = 0.12;     // constellation lines on the night ground
+const EDGE_ALPHA_LIGHT = 0.16; // paper keeps its original ink
+const EDGE_FOCUS_ALPHA = 0.75;
+// 2D has no camera, so depth is faked by star class: the small classes sit a
+// little further back (lower alpha, cooler tint), the hubs sit in front.
+const CLASS_ALPHA = Object.freeze([0.72, 0.86, 0.95, 1]);
+const CLASS_COOL = Object.freeze([0.55, 0.3, 0.12, 0]);
+const BG_DRIFT_PX = 10;      // how far the sky itself wanders, screen pixels
+const BG_DRIFT_PERIOD = 190; // seconds for one lap of that wander
+// Paper does not bloom: on the day theme the halo is drawn at its pre-0.3.1
+// tightness (~2.6 × the core) so the light view is visually unchanged.
+const PAPER_GLOW_SCALE = 0.42;
 
 function cssVar(styles, name, fallback) {
   const value = styles.getPropertyValue(name);
@@ -116,10 +132,12 @@ export function createGraphView(canvas, handlers = {}) {
   let opts = defaultVisualOptions();
   let tokens = readCanvasTokens(opts.theme);
   const sprites = makeSpriteCache(300);
+  const nebula = makeNebulaCache();
   let quality = 'high';
   let particles = [];
   let particleSize = { width: 0, height: 0, count: -1 };
   let maxDegree = 1;
+  let anchors = new Set(); // the few brightest stars: they get the wide bloom
   let clock = 0;       // seconds of ambient time (frozen when animation is off)
   let lastTs = 0;
   let dimMix = 0;      // 0 = nothing dimmed, 1 = focus dimming fully applied
@@ -144,7 +162,9 @@ export function createGraphView(canvas, handlers = {}) {
 
   function refreshQuality(width, height, dpr) {
     quality = qualityFor(opts, { nodeCount: data.visibleNodes?.size ?? 0, width, height, dpr });
-    const count = particleCountFor(quality);
+    // The dense sky is a night-theme effect: on paper the old sparse dust is
+    // the right amount of texture, so the day theme keeps its original density.
+    const count = Math.round(particleCountFor(quality) * (tokens.dark ? 1 : 0.18));
     if (particleSize.count !== count || particleSize.width !== Math.round(width) || particleSize.height !== Math.round(height)) {
       particles = createParticles(count, width, height, 'vault-graph-2d');
       particleSize = { width: Math.round(width), height: Math.round(height), count };
@@ -168,16 +188,29 @@ export function createGraphView(canvas, handlers = {}) {
       }
     }
     maxDegree = Math.max(1, m);
+    // The handful of true hubs: a constellation needs a few fixed points the
+    // eye returns to, so they carry an extra very wide, very faint bloom.
+    anchors = new Set(
+      visibleBodies()
+        .slice()
+        .sort((a, b) => (b.degree || 0) - (a.degree || 0) || String(a.id).localeCompare(String(b.id)))
+        .slice(0, ANCHOR_COUNT)
+        .map((b) => b.id)
+    );
+  }
+
+  function bucketOf(body) {
+    return sizeBucket(body.degree || 0, maxDegree);
   }
 
   // Size by degree, in four star classes: bigger = more connected (§4).
   function radiusOf(body) {
-    return radiusFor(sizeBucket(body.degree || 0, maxDegree), BASE_RADIUS);
+    return radiusFor(bucketOf(body), BASE_RADIUS);
   }
 
-  /** On-screen core radius in CSS pixels. */
+  /** On-screen core radius in CSS pixels: 3 px (leaf) … 8 px (hub) at zoom 1. */
   function screenRadius(body) {
-    return Math.max(2.2, Math.min(radiusOf(body) * view.scale, 36));
+    return Math.min(coreRadiusPx(bucketOf(body), view.scale), 34);
   }
 
   function visibleBodies() {
@@ -263,6 +296,15 @@ export function createGraphView(canvas, handlers = {}) {
       tSeconds: clock,
       quality,
       animation: opts.animation,
+      nebula,
+      // 2D has no camera to parallax against, so the sky wanders on its own —
+      // one lap in a bit over three minutes, far below the "look at me" threshold.
+      parallax: opts.animation
+        ? {
+            x: Math.cos((clock / BG_DRIFT_PERIOD) * Math.PI * 2) * BG_DRIFT_PX,
+            y: Math.sin((clock / BG_DRIFT_PERIOD) * Math.PI * 2) * BG_DRIFT_PX * 0.6,
+          }
+        : null,
     });
     if (!data.graph || !data.sim) return;
 
@@ -364,21 +406,24 @@ export function createGraphView(canvas, handlers = {}) {
 
     const additive = tokens.dark && quality !== 'low';
     if (additive) ctx.globalCompositeOperation = 'lighter';
-    strokeBatch(plain.normal, tokens.edge(0.16), 0.8);
-    strokeBatch(plain.dim, tokens.edge(lerp(0.16, DIM_EDGE, dimMix)), 0.8);
+    // Constellation lines: 1 px, barely there. They tell you the sky is a graph
+    // without ever becoming the subject — the stars are.
+    const edgeAlpha = tokens.dark ? EDGE_ALPHA : EDGE_ALPHA_LIGHT;
+    strokeBatch(plain.normal, tokens.edge(edgeAlpha), tokens.dark ? 1 : 0.8);
+    strokeBatch(plain.dim, tokens.edge(lerp(edgeAlpha, DIM_EDGE, dimMix)), tokens.dark ? 1 : 0.8);
     if (additive) ctx.globalCompositeOperation = 'source-over';
     for (const [status, list] of dashed.normal) {
-      strokeBatch(list, statusColor(status, { dark: tokens.dark, alpha: 0.55 }), 0.9, [5, 4]);
+      strokeBatch(list, statusColor(status, { dark: tokens.dark, alpha: tokens.dark ? 0.4 : 0.55 }), 0.9, [5, 4]);
     }
-    strokeBatch(dashed.dim, tokens.edge(lerp(0.16, DIM_EDGE, dimMix)), 0.9, [5, 4]);
+    strokeBatch(dashed.dim, tokens.edge(lerp(edgeAlpha, DIM_EDGE, dimMix)), 0.9, [5, 4]);
 
     if (focused.length) {
       // A faint wider stroke under the crisp one reads as a luminous filament.
-      if (quality === 'high') strokeBatch(focused, tokens.edgeFocusColor(0.15), 4);
+      if (quality === 'high') strokeBatch(focused, tokens.edgeFocusColor(0.18), 3.5);
       const solid = focused.filter((s) => !s.tentative);
       const soft = focused.filter((s) => s.tentative);
-      strokeBatch(solid, tokens.edgeFocusColor(0.85), 1.4);
-      strokeBatch(soft, tokens.edgeFocusColor(0.7), 1.2, [5, 4]);
+      strokeBatch(solid, tokens.edgeFocusColor(EDGE_FOCUS_ALPHA), 1.4);
+      strokeBatch(soft, tokens.edgeFocusColor(EDGE_FOCUS_ALPHA * 0.85), 1.2, [5, 4]);
     }
     if (selectedEdge) {
       if (quality === 'high') strokeBatch([selectedEdge], tokens.glowColor(0.18), 5);
@@ -397,9 +442,9 @@ export function createGraphView(canvas, handlers = {}) {
       ctx.fillStyle = style;
       ctx.fill();
     };
-    fillArrows(arrows.normal, tokens.edge(0.4));
-    fillArrows(arrows.dim, tokens.edge(lerp(0.4, DIM_EDGE, dimMix)));
-    fillArrows(arrows.focus, tokens.edgeFocusColor(0.85));
+    fillArrows(arrows.normal, tokens.edge(tokens.dark ? 0.22 : 0.4));
+    fillArrows(arrows.dim, tokens.edge(lerp(tokens.dark ? 0.22 : 0.4, DIM_EDGE, dimMix)));
+    fillArrows(arrows.focus, tokens.edgeFocusColor(EDGE_FOCUS_ALPHA));
 
     // --- halos: one drawImage per star ------------------------------------
     if (opts.glow !== 'off') {
@@ -408,16 +453,22 @@ export function createGraphView(canvas, handlers = {}) {
         const node = data.graph.nodeById.get(body.id);
         const p = pos.get(body.id);
         if (!node || !p) continue;
-        if (p.x < -60 || p.y < -60 || p.x > width + 60 || p.y > height + 60) continue;
+        if (p.x < -120 || p.y < -120 || p.x > width + 120 || p.y > height + 120) continue;
+        const bucket = bucketOf(body);
         const r = screenRadius(body);
         const isSelected = body.id === selectedNodeId;
         const emphasised = isSelected || hover === body.id;
         const tw = quality === 'low' ? 1 : twinkle(body.id, clock, animate);
-        const intensity = nodeAlpha(body.id) * tw * (emphasised ? 1.35 : 1);
-        drawHalo(ctx, sprites, starColor(node), p.x, p.y, r, opts.glow, intensity, quality);
+        const tint = starColor(node, bucket);
+        const intensity = nodeAlpha(body.id) * (CLASS_ALPHA[bucket] ?? 1) * tw * (emphasised ? 1.35 : 1);
+        // Anchors first (widest, faintest), so the tight bloom lands on top.
+        if (anchors.has(body.id) && quality !== 'low' && tokens.dark) {
+          drawHalo(ctx, sprites, tint, p.x, p.y, r, 'anchor', intensity, quality);
+        }
+        drawHalo(ctx, sprites, tint, p.x, p.y, tokens.dark ? r : r * PAPER_GLOW_SCALE, opts.glow, intensity, quality);
         if (isSelected) {
-          // The warm accent halo is the unmistakable "this one" signal.
-          drawHalo(ctx, sprites, tokens.glowColor(1), p.x, p.y, r * 1.5, 'high', 0.9 * tw, quality);
+          // The warm accent bloom is the unmistakable "this one" signal.
+          drawHalo(ctx, sprites, tokens.glowColor(1), p.x, p.y, r, 'select', 0.95 * tw, quality);
         }
       }
       if (additive) ctx.globalCompositeOperation = 'source-over';
@@ -428,12 +479,13 @@ export function createGraphView(canvas, handlers = {}) {
       const node = data.graph.nodeById.get(body.id);
       const p = pos.get(body.id);
       if (!node || !p) continue;
+      const bucket = bucketOf(body);
       const r = screenRadius(body);
       const isSelected = body.id === selectedNodeId;
       const isNeighbour = neighbours.has(body.id) && !isSelected;
       const isMatch = data.matches.has(body.id);
       const emphasised = isSelected || hover === body.id || isMatch;
-      const alpha = nodeAlpha(body.id);
+      const alpha = nodeAlpha(body.id) * (tokens.dark ? CLASS_ALPHA[bucket] ?? 1 : 1);
       const shape = shapeForType(node.type);
       // Below ~3 px a square and a circle are the same three pixels: fall back
       // to a dot (the hue still carries the type) unless the node is called out.
@@ -441,10 +493,14 @@ export function createGraphView(canvas, handlers = {}) {
 
       ctx.globalAlpha = alpha;
       pathForShape(ctx, drawShape ? shape : 'circle', p.x, p.y, r);
-      ctx.fillStyle = starColor(node);
+      ctx.fillStyle = starColor(node, bucket);
       ctx.fill();
-      if (r >= 2.4) {
-        ctx.strokeStyle = tokens.dark ? inkFor(node.type) : inkFor(node.type);
+      if (tokens.dark) {
+        // White-hot centre, tinted rim: what makes a filled shape read as a
+        // star rather than as a coloured chart marker.
+        drawCoreLight(ctx, p.x, p.y, r, emphasised ? 1 : 0.82);
+      } else if (r >= 2.4) {
+        ctx.strokeStyle = inkFor(node.type);
         ctx.lineWidth = 1.1;
         ctx.stroke();
       }
@@ -492,9 +548,14 @@ export function createGraphView(canvas, handlers = {}) {
     }
   }
 
-  /** Star core colour: the type hue, lifted on the dark ground. */
-  function starColor(node) {
-    return colorFor(node.type, { lightness: tokens.dark ? 70 : 52 });
+  /**
+   * Star core colour. Night: the type hue pushed toward a cool white, cooled
+   * further for the small classes so size and depth agree. Day: the ink palette,
+   * untouched — paper is not a sky.
+   */
+  function starColor(node, bucket = 3) {
+    if (!tokens.dark) return colorFor(node.type, { lightness: 52 });
+    return starTint(node.type, { dark: true, cool: CLASS_COOL[bucket] ?? 0 });
   }
 
   function drawLabels(bodies, pos, { selectedNodeId, neighbours }) {

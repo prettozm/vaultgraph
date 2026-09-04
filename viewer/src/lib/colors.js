@@ -77,3 +77,77 @@ export function shapeForType(type) {
   if (key === 'hypothese' || key === 'hypothesis' || key === 'hypothèse') return 'triangle';
   return 'circle';
 }
+
+// --------------------------------------------------------------------------
+// Star tints (v0.3.1 "constellation pass")
+// --------------------------------------------------------------------------
+//
+// On the night ground a fully saturated hue reads as a coloured chart dot, not
+// as a star. Real stars are near-white with a *bias*: the hue survives, the
+// chroma does not. `starTint` therefore blends the category hue toward a cool
+// white so the sky reads as one luminous family, while the pairwise distance
+// between tints stays large enough to keep the type channel legible
+// (test/colors.test.mjs asserts both the family and the separation).
+//
+// The day theme keeps `colorFor` untouched — paper wants ink, not starlight.
+
+/** Cool white the night tints converge toward (#dfe8ff). */
+export const STAR_WHITE = Object.freeze([223, 232, 255]);
+
+/** How far a night tint travels toward `STAR_WHITE` (0 = raw hue, 1 = white). */
+export const STAR_TINT_MIX = 0.55;
+
+function clamp01(v) {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+/** h in [0,360), s/l in [0,1] → [r,g,b] each in [0,255]. */
+export function hslToRgb(h, s, l) {
+  const hh = ((h % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * l - 1)) * clamp01(s);
+  const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
+  const m = l - c / 2;
+  let rgb;
+  if (hh < 60) rgb = [c, x, 0];
+  else if (hh < 120) rgb = [x, c, 0];
+  else if (hh < 180) rgb = [0, c, x];
+  else if (hh < 240) rgb = [0, x, c];
+  else if (hh < 300) rgb = [x, 0, c];
+  else rgb = [c, 0, x];
+  return rgb.map((v) => Math.round((v + m) * 255));
+}
+
+/** Blend an [r,g,b] toward the cool star white by `mix` ∈ [0,1]. */
+export function coolBlend(rgb, mix = STAR_TINT_MIX) {
+  const m = clamp01(mix);
+  return rgb.map((v, i) => Math.round(v + (STAR_WHITE[i] - v) * m));
+}
+
+function rgbCss([r, g, b], alpha = 1) {
+  return alpha >= 1 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/**
+ * Star colour for a category. Night: the hue, pushed toward cool white and
+ * slightly cooled further with depth. Day: exactly `colorFor` — unchanged.
+ *
+ * @param {string} value node type (or any category)
+ * @param {{dark?:boolean, hue?:number, alpha?:number, mix?:number, cool?:number}} [options]
+ *   `cool` 0…1 pushes a distant star further toward white-blue (depth fog).
+ */
+export function starTint(value, { dark = false, hue = null, alpha = 1, mix = STAR_TINT_MIX, cool = 0 } = {}) {
+  if (!dark) return colorFor(value, { alpha });
+  const h = Number.isFinite(hue) ? hue : hueFor(value);
+  const c = clamp01(cool);
+  // Distant stars: a touch less chroma and a touch more blue-white.
+  const base = hslToRgb(h, 0.88 - c * 0.2, 0.62);
+  return rgbCss(coolBlend(base, clamp01(mix + c * 0.18)), alpha);
+}
+
+/** Same treatment for an epistemic status, so the status projection matches. */
+export function statusTint(status, { dark = false, alpha = 1, cool = 0 } = {}) {
+  if (!dark) return statusColor(status, { alpha });
+  const key = statusKind(status);
+  const h = key ? STATUS_HUES[key] : hueFor(status);
+  return starTint(String(status ?? ''), { dark, hue: h, alpha, cool });
+}

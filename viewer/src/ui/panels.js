@@ -3,7 +3,7 @@
 // is never interpreted as markup.
 import { el, clear } from './dom.js';
 import { formatSourceRef, formatCount } from '../lib/format.js';
-import { colorFor, statusColor, shapeForType, isTentative } from '../lib/colors.js';
+import { starTint, colorFor, statusColor, shapeForType, isTentative } from '../lib/colors.js';
 import { incidentEdges, PROVENANCE_WITH, PROVENANCE_WITHOUT } from '../lib/graph-model.js';
 
 const FACET_LABELS = {
@@ -39,7 +39,10 @@ function textOrDash(value) {
 }
 
 function typeSwatch(type) {
-  return el('span', { class: 'swatch', style: `background:${colorFor(type)}` });
+  // Swatches match the star tint actually painted on the canvas (pastel in the night theme).
+  const dark = globalThis.document?.documentElement?.dataset?.theme === 'dark';
+  const colour = dark && typeof starTint === 'function' ? starTint(type, { dark: true }) : colorFor(type);
+  return el('span', { class: 'swatch', style: `background:${colour}` });
 }
 
 function statusTag(status, { dark = false } = {}) {
